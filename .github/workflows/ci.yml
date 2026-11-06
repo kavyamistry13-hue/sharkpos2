@@ -1,0 +1,136 @@
+# CI/CD for SHARKPOS 2:  push → install → test → build → (you approve) → deploy.
+# Nothing is deployed unless every check passes AND a reviewer approves the "production" environment in GitHub.
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+  workflow_dispatch:
+
+concurrency: { group: "ci-${{ github.ref }}", cancel-in-progress: true }
+permissions: { contents: read }
+
+jobs:
+  backend:
+    name: Backend tests, migrations, backup drill
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: ci_admin_pw }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGPASSWORD: ci_admin_pw
+      TEST_DATABASE_URL: postgres://sharkpos2_app:app_dev_pw@localhost:5432/sharkpos2_test
+      TEST_MIGRATION_DATABASE_URL: postgres://sharkpos2_owner:owner_dev_pw@localhost:5432/sharkpos2_test
+      MIGRATION_DATABASE_URL: postgres://sharkpos2_owner:owner_dev_pw@localhost:5432/sharkpos2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: backend/package-lock.json }
+      - run: npm ci
+        working-directory: backend
+      - name: Create roles and databases (same script as local development)
+        run: psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f database/setup-local.sql
+      - name: Tests
+        run: npm test
+        working-directory: backend
+      - name: Migrations apply cleanly to an empty database
+        run: npm run migrate && npm run migrate -- --status
+        working-directory: backend
+      - name: Backup → restore drill (proves backups are restorable)
+        env:
+          BACKUP_DATABASE_URL: postgres://sharkpos2_backup:backup_dev_pw@localhost:5432/sharkpos2
+          BACKUP_PASSPHRASE: ci-drill-passphrase-0123456789
+          BACKUP_DIR: ${{ runner.temp }}/backups
+          TARGET_DATABASE_URL: postgres://sharkpos2_owner:owner_dev_pw@localhost:5432/sharkpos2_restore
+          VERIFY_DATABASE_URL: postgres://sharkpos2_backup:backup_dev_pw@localhost:5432/sharkpos2_restore
+        run: |
+          psql -h localhost -U postgres -c "CREATE DATABASE sharkpos2_restore OWNER sharkpos2_owner" -c "GRANT CONNECT ON DATABASE sharkpos2_restore TO sharkpos2_backup"
+          scripts/backup.sh
+          scripts/restore.sh "$BACKUP_DIR"/*.enc
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+        env: { VITE_API_URL: "" }
+
+  image:
+    name: Backend image builds
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f backend/Dockerfile -t sharkpos2-api:ci .
+
+  audit:
+    name: Dependency audit (high severity, informational)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: backend
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: frontend
+
+  deploy:
+    name: Deploy to production (needs approval)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    needs: [backend, frontend, image]
+    runs-on: ubuntu-24.04
+    # Create an environment named "production" in GitHub → Settings → Environments and add yourself as a REQUIRED REVIEWER.
+    # The job then pauses here until you click Approve. Secrets and variables below live in that environment.
+    environment: { name: production, url: "${{ vars.APP_URL }}" }
+    concurrency: { group: production-deploy, cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: 1/4 Database migrations (free Render instances have no pre-deploy step, so they run here)
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          : "${MIGRATION_DATABASE_URL:?missing secret}"
+          (cd backend && npm ci --omit=dev --silent)
+          node database/migrate.js
+      - name: 2/4 Deploy API (Render) and wait until the new version answers
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          API_URL: ${{ vars.API_URL }}
+        run: |
+          set -euo pipefail
+          : "${RENDER_DEPLOY_HOOK_URL:?missing secret}" "${API_URL:?missing variable}"
+          curl -fsS -X POST "${RENDER_DEPLOY_HOOK_URL}&ref=${GITHUB_SHA}" >/dev/null
+          for i in $(seq 1 60); do
+            v=$(curl -fsS --max-time 90 "$API_URL/api/health" 2>/dev/null | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).version' 2>/dev/null || true)
+            [ "$v" = "$GITHUB_SHA" ] && { echo "API is running $v"; exit 0; }
+            sleep 10
+          done
+          echo "API did not report version $GITHUB_SHA within ~10 minutes." >&2; exit 1
+      - name: 3/4 Deploy web app + API proxy (Cloudflare Pages)
+        working-directory: frontend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build            # VITE_API_URL stays empty: the browser only talks to the Pages address
+          npx wrangler pages deploy dist --project-name "$PAGES_PROJECT" --branch main --commit-dirty=true
+      - name: 4/4 Smoke test through the public address (proves proxy, API and database)
+        env: { APP_URL: "${{ vars.APP_URL }}" }
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 12); do curl -fsS --max-time 90 "$APP_URL/api/health" | grep -q '"db":"ok"' && break; sleep 10; done
+          curl -fsS "$APP_URL/api/health" | grep -q '"db":"ok"'
+          curl -fsS -o /dev/null "$APP_URL/login"

@@ -1,0 +1,39 @@
+# Weekly proof that the newest backup can really be restored (into a throw-away database on the runner, never production).
+name: Restore drill
+on:
+  schedule: [{ cron: "0 22 * * 0" }]
+  workflow_dispatch:
+permissions: { contents: read }
+jobs:
+  drill:
+    runs-on: ubuntu-24.04
+    environment: production
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: ci_admin_pw }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env: { PGPASSWORD: ci_admin_pw }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Create roles
+        run: |
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f database/setup-local.sql
+          psql -h localhost -U postgres -c "DROP DATABASE sharkpos2_test" -c "DROP DATABASE sharkpos2"
+          psql -h localhost -U postgres -c "CREATE DATABASE sharkpos2_restore OWNER sharkpos2_owner" -c "GRANT CONNECT ON DATABASE sharkpos2_restore TO sharkpos2_backup"
+      - name: Download the newest backup and restore it
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+          BACKUP_GH_REPO: ${{ vars.BACKUP_VAULT_REPO }}
+          GH_TOKEN: ${{ secrets.BACKUP_VAULT_TOKEN }}
+          TARGET_DATABASE_URL: postgres://sharkpos2_owner:owner_dev_pw@localhost:5432/sharkpos2_restore
+          VERIFY_DATABASE_URL: postgres://sharkpos2_backup:backup_dev_pw@localhost:5432/sharkpos2_restore
+        run: |
+          set -euo pipefail
+          TAG=$(gh release list --repo "$BACKUP_GH_REPO" --limit 1 --json tagName --jq '.[0].tagName')
+          echo "Newest backup: $TAG"
+          gh release download "$TAG" --repo "$BACKUP_GH_REPO" --pattern '*.dump.enc' --dir "$RUNNER_TEMP"
+          scripts/restore.sh "$RUNNER_TEMP/$TAG.dump.enc"

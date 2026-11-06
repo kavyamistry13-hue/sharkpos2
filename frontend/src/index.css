@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Schibsted Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --color-ink-950: #07141e;
+  --color-ink-900: #0b1f2e;
+  --color-ink-800: #11293b;
+  --color-ink-700: #183850;
+  --color-ink-600: #25506b;
+  --color-canvas: #f2f5f7;
+  --color-line: #dce4ea;
+  --color-line-soft: #e9eef2;
+  --color-text: #12222e;
+  --color-muted: #566774;
+  --color-brand: #1f68c1;
+  --color-brand-dark: #17539c;
+  --color-brand-soft: #e5eefa;
+  --color-ok: #176f49;
+  --color-ok-soft: #e1f3ea;
+  --color-warn: #8a5a00;
+  --color-warn-soft: #fbf0d3;
+  --color-bad: #ac3320;
+  --color-bad-soft: #fbe6e1;
+  --color-info: #1f68c1;
+  --color-info-soft: #e5eefa;
+}
+
+:root {
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --grid: #e3e9ee;
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-feature-settings: "tnum" 1, "ss01" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Keyboard focus is always visible */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.num { font-variant-numeric: tabular-nums; }
+
+/* The one orchestrated motion: a sonar ping on the live AI indicator */
+@keyframes ping-ring { 0% { transform: scale(.6); opacity: .7 } 100% { transform: scale(2.2); opacity: 0 } }
+.ping::after { content: ""; position: absolute; inset: 0; border-radius: 999px; background: currentColor; animation: ping-ring 2s ease-out infinite; }
+@keyframes toast-in { from { transform: translateY(8px); opacity: 0 } to { transform: none; opacity: 1 } }
+.toast-in { animation: toast-in .18s ease-out; }
+@keyframes spin { to { transform: rotate(360deg) } }
+.spin { animation: spin .8s linear infinite; }
+@keyframes shimmer { 0% { background-position: -200px 0 } 100% { background-position: calc(200px + 100%) 0 } }
+.skeleton { background: linear-gradient(90deg, #e8eef2 25%, #f3f6f8 50%, #e8eef2 75%); background-size: 200px 100%; animation: shimmer 1.3s infinite linear; border-radius: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ping::after, .spin, .skeleton, .toast-in { animation: none !important; }
+  * { scroll-behavior: auto !important; transition: none !important; }
+}
+
+@media print {
+  body * { visibility: hidden; }
+  .print-area, .print-area * { visibility: visible; }
+  .print-area { position: absolute; inset: 0; margin: 0; padding: 16px; box-shadow: none !important; border: 0 !important; }
+}

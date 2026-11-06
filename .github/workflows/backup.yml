@@ -1,0 +1,23 @@
+# Nightly encrypted database backup (02:00 India time) to a private GitHub vault repository, with retention. A failed run emails the repo owner.
+name: Database backup
+on:
+  schedule: [{ cron: "30 20 * * *" }]
+  workflow_dispatch:
+permissions: { contents: read }
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Backup (encrypted, verified, stored in the private vault repository)
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+          BACKUP_GH_REPO: ${{ vars.BACKUP_VAULT_REPO }}
+          GH_TOKEN: ${{ secrets.BACKUP_VAULT_TOKEN }}
+        run: |
+          : "${BACKUP_GH_REPO:?set the BACKUP_VAULT_REPO variable (owner/private-repo)}"
+          scripts/backup.sh

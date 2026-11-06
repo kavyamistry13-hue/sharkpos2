@@ -1,0 +1,29 @@
+# Render Blueprint — FREE plan. Nothing is created until YOU connect this repo in the Render dashboard.
+# Free web services: sleep after 15 min without traffic (~1 min to wake), 750 instance hours/month, no persistent disk, may restart at any time.
+# Free instances have no pre-deploy command, so database migrations are run by the GitHub "Deploy" workflow BEFORE it triggers this service.
+services:
+  - type: web
+    name: sharkpos2-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    region: singapore
+    plan: free
+    healthCheckPath: /api/health/live
+    autoDeploy: false            # deploys only from the GitHub workflow, after tests pass and you approve
+    envVars:
+      - { key: NODE_ENV, value: production }
+      - { key: TRUST_PROXY_HOPS, value: "1" }
+      - { key: STORE_TZ, value: Asia/Kolkata }
+      - { key: PAYMENT_PROVIDER, value: razorpay }
+      - { key: DB_POOL_MAX, value: "5" }
+      - { key: DATABASE_URL, sync: false }          # Neon DIRECT (not "-pooler") URL, role sharkpos2_app, ?sslmode=verify-full
+      - { key: JWT_SECRET, sync: false }            # openssl rand -hex 48
+      - { key: CORS_ORIGIN, sync: false }           # https://<project>.pages.dev
+      - { key: PROXY_SHARED_SECRET, sync: false }   # openssl rand -hex 32  (same value in Cloudflare Pages)
+      - { key: PAYMENT_KEY_ID, sync: false }
+      - { key: PAYMENT_KEY_SECRET, sync: false }
+      - { key: PAYMENT_WEBHOOK_SECRET, sync: false }
+      - { key: LLM_PROVIDER, value: anthropic }
+      - { key: LLM_API_KEY, sync: false }
+      - { key: LLM_MODEL, sync: false }

@@ -1,0 +1,11 @@
+name = "sharkpos2-keepalive"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+workers_dev = false
+
+[vars]
+API_ORIGIN = "https://REPLACE-WITH-YOUR-RENDER-URL.onrender.com"
+
+[triggers]
+# UTC. 02:30-16:30 UTC = 08:00-22:00 India time. ~14 h/day keeps the free 750 monthly instance hours safe (≈ 430 h/month).
+crons = ["*/10 2-16 * * *"]
