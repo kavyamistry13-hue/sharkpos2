@@ -119,19 +119,27 @@ export default function Pos() {
     setCart((c) => {
       const ex = c.find((x) => x.id === p.id);
       if (ex) {
-        if (ex.qty >= p.stock) { toast.error(`Only ${p.stock} of ${p.name} in stock.`); return c; }
-        return c.map((x) => (x.id === p.id ? { ...x, qty: x.qty + 1 } : x));
+        if (ex.qty >= p.stock) { toast.error(`Only ${p.stock} ${p.unit || ''} of ${p.name} in stock.`.replace('  ', ' ')); return c; }
+        return c.map((x) => (x.id === p.id ? { ...x, qty: Math.min(Math.round((x.qty + 1) * 1000) / 1000, p.stock), qtyText: undefined } : x));
       }
-      return [...c, { id: p.id, name: p.name, price: p.price, stock: p.stock, qty: 1 }];
+      return [...c, { id: p.id, name: p.name, price: p.price, stock: p.stock, qty: 1, unit: p.unit || 'pcs', allowDecimal: Boolean(p.allowDecimal), priceIncludesTax: Boolean(p.priceIncludesTax) }];
     });
   }, [toast]);
 
   const setQty = (id, qty) => setCart((c) => c.flatMap((x) => {
     if (x.id !== id) return [x];
-    if (qty <= 0) return [];
-    if (qty > x.stock) { toast.error(`Only ${x.stock} of ${x.name} in stock.`); return [{ ...x, qty: x.stock }]; }
-    return [{ ...x, qty }];
+    const q = Math.round(qty * 1000) / 1000;
+    if (q <= 0) return [];
+    if (q > x.stock) { toast.error(`Only ${x.stock} ${x.unit} of ${x.name} in stock.`); return [{ ...x, qty: x.stock, qtyText: undefined }]; }
+    return [{ ...x, qty: q, qtyText: undefined }];
   }));
+  // Loose goods: let the cashier type "0." or "0.75" without the line vanishing mid-typing; the bill uses the parsed number.
+  const typeQty = (id, text) => {
+    if (!/^\d*\.?\d{0,3}$/.test(text)) return;
+    const v = parseFloat(text);
+    setCart((c) => c.map((x) => (x.id === id ? { ...x, qtyText: text, qty: v > 0 ? Math.min(v, x.stock) : x.qty } : x)));
+  };
+  const commitQty = (id, text) => { const v = parseFloat(text); if (!(v > 0)) setQty(id, 0); else setQty(id, v); };
 
   const onSearchKey = (e) => {
     if (e.key === 'Enter' && products.data && products.data.rows.length) {
@@ -193,10 +201,13 @@ export default function Pos() {
           <ul className="divide-y divide-line-soft">
             {cart.map((c) => (
               <li key={c.id} className="flex items-center gap-3 px-5 py-2.5">
-                <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{c.name}</p><p className="text-xs text-muted num">{inr(c.price, 2)} each</p></div>
+                <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{c.name}</p><p className="text-xs text-muted num">{inr(c.price, 2)} {c.unit === 'pcs' ? 'each' : `per ${c.unit}`}{c.priceIncludesTax ? ' · incl. tax' : ''}</p></div>
                 <div className="flex items-center rounded-lg border border-line">
                   <button className="grid size-8 place-items-center text-muted hover:bg-line-soft" onClick={() => setQty(c.id, c.qty - 1)} aria-label={`Decrease ${c.name}`}><Minus className="size-4" /></button>
-                  <input aria-label={`Quantity of ${c.name}`} className="h-8 w-10 border-x border-line text-center text-sm font-semibold num focus:outline-none" inputMode="numeric" value={c.qty} onChange={(e) => setQty(c.id, parseInt(e.target.value || '0', 10) || 0)} />
+                  {c.allowDecimal
+                    ? <input aria-label={`Quantity of ${c.name} in ${c.unit}`} className="h-8 w-16 border-x border-line text-center text-sm font-semibold num focus:outline-none" inputMode="decimal" value={c.qtyText !== undefined ? c.qtyText : String(c.qty)} onChange={(e) => typeQty(c.id, e.target.value)} onBlur={(e) => commitQty(c.id, e.target.value)} />
+                    : <input aria-label={`Quantity of ${c.name}`} className="h-8 w-10 border-x border-line text-center text-sm font-semibold num focus:outline-none" inputMode="numeric" value={c.qty} onChange={(e) => setQty(c.id, parseInt(e.target.value || '0', 10) || 0)} />}
+                  {c.allowDecimal && <span className="grid place-items-center pr-2 text-xs text-muted">{c.unit}</span>}
                   <button className="grid size-8 place-items-center text-muted hover:bg-line-soft" onClick={() => setQty(c.id, c.qty + 1)} aria-label={`Increase ${c.name}`}><Plus className="size-4" /></button>
                 </div>
                 <p className="w-20 text-right text-sm font-semibold num">{inr(c.price * c.qty, 2)}</p>
@@ -220,7 +231,7 @@ export default function Pos() {
         <dl className="space-y-1.5 text-sm num">
           <div className="flex justify-between"><dt className="text-muted">Subtotal</dt><dd>{bill ? inr(bill.subtotal, 2) : '—'}</dd></div>
           <div className="flex justify-between"><dt className="text-muted">Discount{bill && bill.discount > 0 ? ` (${bill.discountPct}%)` : ''}</dt><dd>{bill && bill.discount > 0 ? `−${inr(bill.discount, 2)}` : '—'}</dd></div>
-          <div className="flex justify-between"><dt className="text-muted">Tax</dt><dd>{bill ? inr(bill.tax, 2) : '—'}</dd></div>
+          <div className="flex justify-between"><dt className="text-muted">{bill && bill.taxIncluded > 0 ? (bill.taxAdded > 0 ? 'Tax' : 'Tax (already in prices)') : 'Tax'}</dt><dd>{bill ? inr(bill.tax, 2) : '—'}{bill && bill.taxIncluded > 0 && bill.taxAdded > 0 ? <span className="block text-[11px] text-muted">{inr(bill.taxIncluded, 2)} included, {inr(bill.taxAdded, 2)} added</span> : null}</dd></div>
           <div className="flex justify-between border-t border-line pt-2 text-xl font-extrabold"><dt>Total</dt><dd>{bill ? inr(bill.total, 2) : '₹0.00'}</dd></div>
         </dl>
         <div role="radiogroup" aria-label="Payment method" className="grid grid-cols-3 gap-2">

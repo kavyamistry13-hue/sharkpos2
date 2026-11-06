@@ -4,6 +4,7 @@ const validate = require('../middleware/validate');
 const { authorize } = require('../middleware/auth');
 const asyncH = require('../utils/async');
 const svc = require('../services/sales');
+const { quantitySchema } = require('../utils/units');
 
 const { audit } = require('../services/audit');
 const { badRequest } = require('../utils/errors');
@@ -13,7 +14,7 @@ const id = z.coerce.number().int().positive();
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 const cart = {
-  items: z.array(z.object({ productId: id, quantity: z.coerce.number().int().min(1).max(1000) })).min(1, 'Add at least one product.').max(100),
+  items: z.array(z.object({ productId: id, quantity: quantitySchema })).min(1, 'Add at least one product.').max(100),
   discount: z.object({ type: z.enum(['amount', 'percent']), value: z.coerce.number().min(0).max(1e7) }).nullable().optional(),
 };
 

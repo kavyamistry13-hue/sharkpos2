@@ -8,6 +8,7 @@ const { toPaise } = require('../utils/money');
 const crypto = require('crypto');
 const { HttpError, badRequest, forbidden, notFound, conflict } = require('../utils/errors');
 const { invalidateAll } = require('../utils/cache');
+const { assertQuantity, round3 } = require('../utils/units');
 
 const { getSettings } = require('./settings');
 
@@ -21,7 +22,7 @@ async function discountLimits() {
 async function loadProductsForCart(client, items, { lock }) {
   const ids = [...new Set(items.map((i) => i.productId))].sort((a, b) => a - b);
   const res = await client.query(
-    `SELECT p.id, p.name, p.sku, p.selling_price, p.stock, p.is_active, p.expiry_date, c.tax_rate
+    `SELECT p.id, p.name, p.sku, p.selling_price, p.purchase_price, p.stock, p.is_active, p.expiry_date, p.unit, p.price_includes_tax, c.tax_rate
        FROM products p JOIN categories c ON c.id = p.category_id
       WHERE p.id = ANY($1::int[]) ${lock ? 'FOR UPDATE OF p' : ''}`,
     [ids],
@@ -31,7 +32,7 @@ async function loadProductsForCart(client, items, { lock }) {
 
 function mergeItems(items) {
   const merged = new Map();
-  for (const it of items) merged.set(it.productId, (merged.get(it.productId) || 0) + it.quantity);
+  for (const it of items) merged.set(it.productId, round3((merged.get(it.productId) || 0) + it.quantity));
   return [...merged.entries()].map(([productId, quantity]) => ({ productId, quantity }));
 }
 
@@ -41,10 +42,14 @@ function buildLines(items, products) {
     const p = products.get(it.productId);
     if (!p || !p.is_active) throw notFound('Product not found.');
     if (p.expiry_date && p.expiry_date < todayIso) throw badRequest(`${p.name} is expired and cannot be sold.`);
+    assertQuantity(p.unit, it.quantity, 'Quantity', p.name);
     if (p.stock < it.quantity) {
-      throw conflict(`Insufficient stock for ${p.name}. Only ${p.stock} left.`, { productId: p.id, available: p.stock });
+      throw conflict(`Insufficient stock for ${p.name}. Only ${p.stock} ${p.unit} left.`, { productId: p.id, available: p.stock });
     }
-    return { productId: p.id, name: p.name, quantity: it.quantity, unitPaise: toPaise(p.selling_price), taxRate: p.tax_rate };
+    return {
+      productId: p.id, name: p.name, quantity: it.quantity, unitPaise: toPaise(p.selling_price), taxRate: p.tax_rate,
+      priceIncludesTax: p.price_includes_tax, unit: p.unit, unitCost: p.purchase_price,
+    };
   });
 }
 
@@ -138,10 +143,13 @@ async function createSale(user, input, idempotencyKey) {
     const invoiceNo = `INV-${saleRes.rows[0].created_at.toISOString().slice(0, 10).replace(/-/g, '')}-${String(saleId).padStart(5, '0')}`;
     await client.query('UPDATE sales SET invoice_no = $1 WHERE id = $2', [invoiceNo, saleId]);
 
+    const meta = new Map(lines.map((l) => [l.productId, l]));
     for (const line of bill.items) {
+      const m = meta.get(line.productId);
       await client.query(
-        `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, total) VALUES ($1,$2,$3,$4,$5)`,
-        [saleId, line.productId, line.quantity, line.unitPrice, line.lineTotal],
+        `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, total, unit, unit_cost, cost_source, tax_rate, price_includes_tax, discount_share, taxable_value, tax_amount)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'snapshot',$8,$9,$10,$11,$12)`,
+        [saleId, line.productId, line.quantity, line.unitPrice, line.lineTotal, m.unit, m.unitCost, line.taxRate, line.priceIncludesTax, line.discountShare, line.taxableValue, line.tax],
       );
       const upd = await client.query(`UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1`, [
         line.quantity,
@@ -149,7 +157,7 @@ async function createSale(user, input, idempotencyKey) {
       ]);
       if (!upd.rowCount) throw conflict(`Insufficient stock for ${line.name}.`);
       await client.query(
-        `INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id) VALUES ($1,'sale',$2,$3)`,
+        `INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type) VALUES ($1,'sale',$2,$3,'sale')`,
         [line.productId, -line.quantity, saleId],
       );
     }
@@ -184,7 +192,7 @@ async function getSale(id, user) {
   const s = res.rows[0];
   if (!s || (user && user.role === 'cashier' && s.employee_id !== user.id)) throw notFound('Sale not found.');
   const items = await query(
-    `SELECT si.product_id, p.name, p.sku, si.quantity, si.unit_price, si.total
+    `SELECT si.product_id, p.name, p.sku, si.quantity, si.unit, si.unit_price, si.total, si.tax_rate, si.price_includes_tax, si.tax_amount, si.taxable_value, si.discount_share
        FROM sale_items si JOIN products p ON p.id = si.product_id WHERE si.sale_id = $1 ORDER BY si.id`,
     [id],
   );
@@ -212,9 +220,16 @@ async function getSale(id, user) {
       name: i.name,
       sku: i.sku,
       quantity: i.quantity,
+      unit: i.unit,
       unitPrice: i.unit_price,
       total: i.total,
+      taxRate: i.tax_rate,
+      priceIncludesTax: i.price_includes_tax,
+      taxAmount: i.tax_amount,
+      taxableValue: i.taxable_value,
+      discountShare: i.discount_share,
     })),
+    taxIncluded: Math.round(items.rows.filter((i) => i.price_includes_tax).reduce((a, i) => a + i.tax_amount, 0) * 100) / 100,
     alert: alert && {
       id: alert.id,
       riskScore: alert.risk_score,
@@ -250,7 +265,7 @@ async function listSales(user, f) {
     await query(
       `SELECT s.id, s.invoice_no, s.created_at, s.subtotal, s.discount, s.tax, s.total, s.payment_method, s.status,
               s.refund_amount, u.name AS employee, c.name AS customer,
-              (SELECT COALESCE(SUM(quantity),0)::int FROM sale_items WHERE sale_id = s.id) AS items,
+              (SELECT COALESCE(SUM(quantity),0) FROM sale_items WHERE sale_id = s.id) AS items,
               a.risk_score, a.severity
          ${base}
         ORDER BY s.created_at DESC, s.id DESC
@@ -289,7 +304,7 @@ async function refundSale(id, user) {
     for (const it of items.rows) {
       await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2', [it.quantity, it.product_id]);
       await client.query(
-        `INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id) VALUES ($1,'refund',$2,$3)`,
+        `INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type) VALUES ($1,'refund',$2,$3,'refund')`,
         [it.product_id, it.quantity, id],
       );
     }

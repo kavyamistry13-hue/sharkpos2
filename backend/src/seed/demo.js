@@ -393,7 +393,7 @@ const totalRaw = PRODUCTS.reduce((a, p) => a + p.perDay, 0);
   log('Writing to the database…');
   await withSystemTransaction(async (client) => {
     // Remove this business's previous demo rows (row-level security limits every DELETE to this business).
-    for (const t of ['anomaly_alerts', 'restock_orders', 'inventory_movements', 'sale_items', 'sales', 'customers', 'products', 'suppliers', 'categories', 'settings']) {
+    for (const t of ['anomaly_alerts', 'restock_orders', 'goods_receipt_items', 'goods_receipts', 'supplier_price_history', 'purchase_order_items', 'purchase_orders', 'supplier_products', 'product_cost_history', 'inventory_movements', 'sale_items', 'sales', 'customers', 'products', 'suppliers', 'categories', 'settings']) {
       await client.query(`DELETE FROM ${t}`);
     }
     // Demo staff: keep existing accounts (audit history references them) and refresh their details.
@@ -430,6 +430,7 @@ const totalRaw = PRODUCTS.reduce((a, p) => a + p.perDay, 0);
          AS t(id, sku, name, cat, pp, sp, stock, minst, sup, lead, expiry)`,
       [products.map((p) => p.id), products.map((p) => p.sku), products.map((p) => p.name), products.map((p) => p.cat + 1), products.map((p) => p.purchase), products.map((p) => p.price), products.map((p) => p.stock), products.map((p) => p.minStock), products.map((p) => p.sup + 1), products.map((p) => p.lead), products.map((p) => p.expiry), offProd, offCat, offSup],
     );
+    await client.query(`INSERT INTO product_cost_history (product_id, cost, source) SELECT id + $3, pp, 'initial' FROM unnest($1::int[], $2::numeric[]) AS t(id, pp)`, [products.map((p) => p.id), products.map((p) => p.purchase), offProd]);
     await client.query(
       `INSERT INTO customers (id, name, phone, email, created_at)
        SELECT id + $7, name, phone, email, (ts::timestamp AT TIME ZONE $6) FROM unnest($1::int[], $2::text[], $3::text[], $4::text[], $5::text[]) AS t(id, name, phone, email, ts)`,
@@ -450,15 +451,16 @@ const totalRaw = PRODUCTS.reduce((a, p) => a + p.perDay, 0);
         ],
       );
     }
+    const costOf = new Map(products.map((p) => [p.id, p.purchase]));   // demo cost is constant, so the snapshot equals the product cost
     const items = [];
-    orders.forEach((o) => o.bill.items.forEach((it) => items.push([o.id + offSale, it.productId + offProd, it.quantity, it.unitPrice, it.lineTotal])));
+    orders.forEach((o) => o.bill.items.forEach((it) => items.push([o.id + offSale, it.productId + offProd, it.quantity, it.unitPrice, it.lineTotal, costOf.get(it.productId), it.taxRate, it.discountShare, it.taxableValue, it.tax])));
     for (const part of chunk(items, 8000)) {
-      await client.query(`INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, total) SELECT * FROM unnest($1::int[], $2::int[], $3::int[], $4::numeric[], $5::numeric[])`, [0, 1, 2, 3, 4].map((k) => part.map((r) => r[k])));
+      await client.query(`INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, total, unit_cost, tax_rate, discount_share, taxable_value, tax_amount) SELECT * FROM unnest($1::int[], $2::int[], $3::numeric[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[], $8::numeric[], $9::numeric[], $10::numeric[])`, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((k) => part.map((r) => r[k])));
     }
     for (const part of chunk(movements, 8000)) {
       await client.query(
         `INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, created_at)
-         SELECT pid + $7, typ, qty, ref + $8, (ts::timestamp AT TIME ZONE $6) FROM unnest($1::int[], $2::text[], $3::int[], $4::int[], $5::text[]) AS t(pid, typ, qty, ref, ts)`,
+         SELECT pid + $7, typ, qty, ref + $8, (ts::timestamp AT TIME ZONE $6) FROM unnest($1::int[], $2::text[], $3::numeric[], $4::int[], $5::text[]) AS t(pid, typ, qty, ref, ts)`,
         [0, 1, 2, 3, 4].map((k) => part.map((r) => r[k])).concat([TZ, offProd, offSale]),
       );
     }

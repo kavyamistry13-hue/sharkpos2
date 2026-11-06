@@ -116,7 +116,7 @@ async function loadProductStats() {
     query(
       `SELECT p.id, p.sku, p.name, p.category_id, c.name AS category, c.tax_rate, p.purchase_price, p.selling_price,
               p.stock, p.minimum_stock, p.supplier_id, s.name AS supplier, p.lead_time_days, p.expiry_date, p.is_active,
-              p.created_at
+              p.created_at, p.unit, p.price_includes_tax
          FROM products p
          JOIN categories c ON c.id = p.category_id
          LEFT JOIN suppliers s ON s.id = p.supplier_id
@@ -124,7 +124,7 @@ async function loadProductStats() {
         ORDER BY p.id`,
     ),
     query(
-      `SELECT si.product_id, (s.created_at AT TIME ZONE $1)::date AS d, SUM(si.quantity)::int AS qty
+      `SELECT si.product_id, (s.created_at AT TIME ZONE $1)::date AS d, SUM(si.quantity) AS qty
          FROM sale_items si JOIN sales s ON s.id = si.sale_id
         WHERE s.status = 'completed'
           AND (s.created_at AT TIME ZONE $1)::date >= (now() AT TIME ZONE $1)::date - $2::int
@@ -132,7 +132,21 @@ async function loadProductStats() {
         GROUP BY 1, 2`,
       [tz, WINDOW_DAYS],
     ),
-    query(`SELECT product_id, SUM(quantity)::int AS qty FROM restock_orders WHERE status = 'approved' GROUP BY 1`),
+    // Stock already on its way. Counted once: an approved restock order that is linked to a purchase order is covered by that PO's
+    // outstanding quantity (ordered - received) once the PO is placed; while the PO is still a draft the restock order keeps counting.
+    query(
+      `SELECT product_id, SUM(qty) AS qty FROM (
+         SELECT r.product_id, r.quantity AS qty
+           FROM restock_orders r
+           LEFT JOIN purchase_order_items i ON i.id = r.purchase_order_item_id
+           LEFT JOIN purchase_orders po ON po.id = i.purchase_order_id
+          WHERE r.status = 'approved' AND (r.purchase_order_item_id IS NULL OR po.status = 'draft')
+         UNION ALL
+         SELECT i.product_id, i.ordered_qty - i.received_qty
+           FROM purchase_order_items i JOIN purchase_orders po ON po.id = i.purchase_order_id
+          WHERE po.status IN ('ordered','partially_received')
+       ) t GROUP BY 1`,
+    ),
     query(
       `SELECT DISTINCT product_id FROM restock_orders WHERE status = 'dismissed' AND created_at > now() - interval '24 hours'`,
     ),
@@ -193,6 +207,8 @@ async function loadProductStats() {
       taxRate: p.tax_rate,
       purchasePrice: p.purchase_price,
       sellingPrice: p.selling_price,
+      unit: p.unit,
+      priceIncludesTax: p.price_includes_tax,
       stock: p.stock,
       minimumStock: p.minimum_stock,
       supplierId: p.supplier_id,

@@ -5,6 +5,7 @@ const { authorize } = require('../middleware/auth');
 const asyncH = require('../utils/async');
 const svc = require('../services/products');
 const { audit } = require('../services/audit');
+const { UNITS, stockSchema } = require('../utils/units');
 
 const router = express.Router();
 const id = z.coerce.number().int().positive();
@@ -16,8 +17,10 @@ const base = z.object({
   categoryId: id,
   purchasePrice: z.coerce.number().min(0).max(1e6),
   sellingPrice: z.coerce.number().min(0).max(1e6),
-  stock: z.coerce.number().int().min(0).max(1e6).default(0),
-  minimumStock: z.coerce.number().int().min(0).max(1e6).default(0),
+  stock: stockSchema.default(0),
+  minimumStock: stockSchema.default(0),
+  unit: z.enum(UNITS).default('pcs'),
+  priceIncludesTax: z.boolean().default(false),
   supplierId: z.coerce.number().int().positive().nullable().optional(),
   leadTimeDays: z.coerce.number().int().min(0).max(120).default(3),
   expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().or(z.literal('').transform(() => null)),
@@ -56,11 +59,15 @@ router.put('/:id', authorize('business_owner', 'manager'), validate({ params: z.
   const before = await svc.getProduct(req.params.id);
   const after = await svc.updateProduct(req.params.id, req.body, req.user.id);
   const changed = {}; const was = {};
-  for (const k of ['name', 'sellingPrice', 'purchasePrice', 'minimumStock', 'sku']) if (before[k] !== after[k]) { was[k] = before[k]; changed[k] = after[k]; }
+  for (const k of ['name', 'sellingPrice', 'purchasePrice', 'minimumStock', 'sku', 'unit', 'priceIncludesTax']) if (before[k] !== after[k]) { was[k] = before[k]; changed[k] = after[k]; }
   const priceChanged = 'sellingPrice' in changed;
   await audit(req, priceChanged ? 'product.price_changed' : 'product.updated', { entityType: 'product', entityId: req.params.id, summary: priceChanged ? `Changed price of "${after.name}" from ₹${was.sellingPrice} to ₹${changed.sellingPrice}` : `Product "${after.name}" edited`, oldValue: was, newValue: changed });
   res.json(after);
 }));
+
+// Purchase-cost history (newest first) and the suppliers that sell this product, with their last known cost.
+router.get('/:id/cost-history', authorize('business_owner', 'manager'), validate({ params: z.object({ id }) }), asyncH(async (req, res) => res.json({ rows: await svc.getCostHistory(req.params.id) })));
+router.get('/:id/suppliers', authorize('business_owner', 'manager'), validate({ params: z.object({ id }) }), asyncH(async (req, res) => res.json({ rows: await svc.getProductSuppliers(req.params.id) })));
 
 router.delete('/:id', authorize('business_owner'), validate({ params: z.object({ id }) }), asyncH(async (req, res) => {
   const before = await svc.getProduct(req.params.id);

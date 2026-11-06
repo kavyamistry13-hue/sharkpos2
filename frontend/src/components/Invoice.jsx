@@ -22,12 +22,12 @@ export function InvoiceModal({ sale, onClose, footerExtra }) {
           <p className="mb-2 text-xs text-muted">Cashier: {sale.employee}{sale.customer ? ` · Customer: ${sale.customer.name}` : ''}</p>
           <table className="w-full text-[13px]">
             <thead><tr className="text-left text-xs text-muted"><th className="pb-1 font-medium">Item</th><th className="pb-1 text-right font-medium">Qty</th><th className="pb-1 text-right font-medium">Amount</th></tr></thead>
-            <tbody>{sale.items.map((i) => <tr key={i.productId}><td className="py-0.5 pr-2">{i.name}<span className="block text-[11px] text-muted num">{inr(i.unitPrice, 2)} each</span></td><td className="py-0.5 text-right num">{i.quantity}</td><td className="py-0.5 text-right num">{inr(i.total, 2)}</td></tr>)}</tbody>
+            <tbody>{sale.items.map((i) => <tr key={i.productId}><td className="py-0.5 pr-2">{i.name}<span className="block text-[11px] text-muted num">{inr(i.unitPrice, 2)} {!i.unit || i.unit === 'pcs' ? 'each' : `per ${i.unit}`}{i.priceIncludesTax ? ' · incl. tax' : ''}</span></td><td className="py-0.5 text-right num">{i.quantity}{i.unit && i.unit !== 'pcs' ? ` ${i.unit}` : ''}</td><td className="py-0.5 text-right num">{inr(i.total, 2)}</td></tr>)}</tbody>
           </table>
           <dl className="mt-3 space-y-1 border-t border-dashed border-line pt-2 num">
             <div className="flex justify-between"><dt className="text-muted">Subtotal</dt><dd>{inr(sale.subtotal, 2)}</dd></div>
             {sale.discount > 0 && <div className="flex justify-between"><dt className="text-muted">Discount{sale.discountApprovedBy ? ` (approved by ${sale.discountApprovedBy})` : ''}</dt><dd>−{inr(sale.discount, 2)}</dd></div>}
-            <div className="flex justify-between"><dt className="text-muted">Tax</dt><dd>{inr(sale.tax, 2)}</dd></div>
+            <div className="flex justify-between"><dt className="text-muted">{sale.taxIncluded > 0 && sale.tax - sale.taxIncluded < 0.005 ? 'Tax (included in prices)' : 'Tax'}</dt><dd>{inr(sale.tax, 2)}</dd></div>
             <div className="flex justify-between border-t border-line pt-1.5 text-base font-extrabold"><dt>Total</dt><dd>{inr(sale.total, 2)}</dd></div>
             <div className="flex justify-between"><dt className="text-muted">Paid by</dt><dd>{sale.paymentMethod.toUpperCase()}</dd></div>
           </dl>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, ShoppingCart, Package, Boxes, Receipt, Users, LineChart, Sparkles, ShieldAlert, UserCog, Settings, HelpCircle, Menu, X, LogOut, Presentation, History, CreditCard } from 'lucide-react';
+import { Truck, LayoutDashboard, ShoppingCart, Package, Boxes, Receipt, Users, LineChart, Sparkles, ShieldAlert, UserCog, Settings, HelpCircle, Menu, X, LogOut, Presentation, History, CreditCard } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { LogoMark, Wordmark } from '../components/Logo';
 import { Button, Badge } from '../components/ui';
@@ -13,6 +13,7 @@ const NAV = [
   { to: '/pos', label: 'POS / Billing', icon: ShoppingCart, roles: ['business_owner', 'manager', 'cashier'] },
   { to: '/products', label: 'Products', icon: Package, roles: ['business_owner', 'manager'] },
   { to: '/inventory', label: 'Inventory', icon: Boxes, roles: ['business_owner', 'manager'] },
+  { to: '/purchasing', label: 'Purchasing', icon: Truck, roles: ['business_owner', 'manager'] },
   { to: '/sales', label: 'Sales', icon: Receipt, roles: ['business_owner', 'manager', 'cashier'] },
   { to: '/customers', label: 'Customers', icon: Users, roles: ['business_owner', 'manager'] },
   { to: '/analytics', label: 'Analytics', icon: LineChart, roles: ['business_owner', 'manager'] },

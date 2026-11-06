@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Boxes, Check, Sparkles, X, Info, PackageCheck } from 'lucide-react';
 import { api } from '../services/api';
 import { useAsync } from '../hooks/useAsync';
@@ -53,8 +53,8 @@ function RestockTab({ onChanged, focusId }) {
   const approve = async () => {
     setBusy(true);
     try {
-      const r = await api.post(`/ai/restock/${approving.id}/approve`, { quantity: parseInt(qty, 10) });
-      toast.success(`Restock approved: ${r.quantity} units of ${r.product}. Expected in ${r.expectedInDays} days.`);
+      const r = await api.post(`/ai/restock/${approving.id}/approve`, { quantity: parseFloat(qty) });
+      toast.success(`Restock approved: ${r.quantity} ${r.unit && r.unit !== 'pcs' ? r.unit : 'units'} of ${r.product}. Expected in ${r.expectedInDays} days.`);
       setApproving(null); state.reload(); onChanged();
     } catch (e) { toast.error(e.message); } finally { setBusy(false); }
   };
@@ -94,7 +94,7 @@ function RestockTab({ onChanged, focusId }) {
           <Modal open={!!approving && !!approving.name} onClose={() => setApproving(null)} title="Approve restock order" size="sm"
             footer={<><Button variant="secondary" onClick={() => setApproving(null)}>Cancel</Button><Button variant="success" loading={busy} onClick={approve}>Approve order</Button></>}>
             {approving && approving.name && <div className="space-y-3"><p className="text-sm text-muted">Order <span className="font-semibold text-text">{approving.name}</span> from {approving.supplier || 'the supplier'}. Estimated cost {inr(approving.estimatedCost)}.</p>
-              <Field label="Quantity (units)" hint={`Recommended: ${approving.recommendedQty}`}><Input inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value.replace(/\D/g, ''))} /></Field></div>}
+              <Field label={`Quantity (${approving.unit || 'units'})`} hint={`Recommended: ${approving.recommendedQty}`}><Input inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value.replace(/[^0-9.]/g, ''))} /></Field></div>}
           </Modal>
           {detail && <ForecastModal productId={detail} onClose={() => setDetail(null)} onRestock={(id) => { setDetail(null); openApprove(d.rows.find((x) => x.id === id)); }} />}
         </>
@@ -107,7 +107,7 @@ function OrdersTab({ onChanged }) {
   const toast = useToast();
   const state = useAsync(() => api.get('/inventory/restock-orders'), []);
   const receive = async (o) => {
-    try { await api.post(`/inventory/restock-orders/${o.id}/receive`); toast.success(`${o.quantity} units of ${o.product} received. Stock updated.`); state.reload(); onChanged(); }
+    try { await api.post(`/inventory/restock-orders/${o.id}/receive`); toast.success(`${o.quantity} ${o.unit && o.unit !== 'pcs' ? o.unit : 'units'} of ${o.product} received. Stock updated.`); state.reload(); onChanged(); }
     catch (e) { toast.error(e.message); }
   };
   return (
@@ -118,8 +118,9 @@ function OrdersTab({ onChanged }) {
           { key: 'product', header: 'Product', render: (o) => <div><p className="font-semibold">{o.product}</p><p className="text-xs text-muted">{o.supplier || '—'}</p></div> },
           { key: 'quantity', header: 'Quantity', align: 'right' },
           { key: 'createdAt', header: 'Approved', render: (o) => dateTime(o.createdAt) },
+          { key: 'po', header: 'Purchase order', render: (o) => (o.purchaseOrder ? <Link className="text-brand underline" to="/purchasing">{o.purchaseOrder.poNumber}</Link> : <span className="text-muted">—</span>) },
           { key: 'status', header: 'Status', render: (o) => <Badge tone={o.status === 'received' ? 'ok' : 'info'} dot>{o.status === 'received' ? 'Received' : 'On order'}</Badge> },
-          { key: 'act', header: <span className="sr-only">Action</span>, align: 'right', render: (o) => o.status === 'approved' ? <Button size="sm" variant="secondary" onClick={() => receive(o)}>Mark received</Button> : null },
+          { key: 'act', header: <span className="sr-only">Action</span>, align: 'right', render: (o) => o.status === 'approved' ? (o.purchaseOrder ? <Link className="text-sm font-medium text-brand" to="/purchasing">Receive on the PO</Link> : <Button size="sm" variant="secondary" onClick={() => receive(o)}>Mark received</Button>) : null },
         ]} empty={<EmptyState icon={Boxes} title="No restock orders yet" hint="Approve a recommendation in AI Restock to create one." />} />}
       </Async>
     </Card>

@@ -2,9 +2,10 @@ const { query, withTransaction } = require('../db');
 const { getProductStats, restockReasons } = require('./forecast');
 const { badRequest, notFound, conflict } = require('../utils/errors');
 const { invalidateAll } = require('../utils/cache');
+const { assertQuantity } = require('../utils/units');
 
 const brief = (p) => ({
-  id: p.id, name: p.name, sku: p.sku, category: p.category, supplier: p.supplier, stock: p.stock, minimumStock: p.minimumStock,
+  id: p.id, name: p.name, sku: p.sku, unit: p.unit, category: p.category, supplier: p.supplier, stock: p.stock, minimumStock: p.minimumStock,
   avgDailySales: p.avgDailySales, trendPct: p.trendPct, projected7: p.projected7, daysToStockout: p.daysToStockout,
   stockoutRisk: p.stockoutRisk, riskLevel: p.riskLevel, stockStatus: p.stockStatus, stockValue: p.stockValue,
   expiryDate: p.expiryDate, daysToExpiry: p.daysToExpiry, expiryStatus: p.expiryStatus, leadTimeDays: p.leadTimeDays,
@@ -96,6 +97,7 @@ async function approveRestock(productId, quantity, user) {
   if (!p) throw notFound('Product not found.');
   const qty = quantity ?? p.recommendedQty;
   if (!qty || qty <= 0) throw badRequest('There is nothing to restock for this product.');
+  assertQuantity(p.unit, qty, 'Quantity', p.name);
   const cap = Math.max(p.recommendedQty * 3, 500);
   if (qty > cap) throw badRequest(`Quantity looks too high. Maximum allowed for this product is ${cap}.`);
   const res = await query(
@@ -116,22 +118,26 @@ async function dismissRestock(productId, user) {
 
 async function listRestockOrders() {
   const res = await query(
-    `SELECT r.id, r.product_id, p.name AS product, p.sku, r.quantity, r.status, r.reason, r.created_at, r.resolved_at, u.name AS created_by, s.name AS supplier, p.lead_time_days
+    `SELECT r.id, r.product_id, p.name AS product, p.sku, p.unit, p.supplier_id, r.quantity, r.status, r.reason, r.created_at, r.resolved_at, u.name AS created_by, s.name AS supplier, p.lead_time_days,
+            po.id AS po_id, po.po_number, po.status AS po_status
        FROM restock_orders r JOIN products p ON p.id = r.product_id LEFT JOIN users u ON u.id = r.created_by LEFT JOIN suppliers s ON s.id = p.supplier_id
+       LEFT JOIN purchase_order_items poi ON poi.id = r.purchase_order_item_id LEFT JOIN purchase_orders po ON po.id = poi.purchase_order_id
       WHERE r.status IN ('approved','received') ORDER BY r.created_at DESC LIMIT 50`,
   );
-  return res.rows.map((r) => ({ id: r.id, productId: r.product_id, product: r.product, sku: r.sku, quantity: r.quantity, status: r.status, supplier: r.supplier, leadTimeDays: r.lead_time_days, createdBy: r.created_by, createdAt: r.created_at, resolvedAt: r.resolved_at }));
+  return res.rows.map((r) => ({ id: r.id, productId: r.product_id, product: r.product, sku: r.sku, quantity: r.quantity, status: r.status, supplier: r.supplier, leadTimeDays: r.lead_time_days, createdBy: r.created_by, createdAt: r.created_at, resolvedAt: r.resolved_at, unit: r.unit, supplierId: r.supplier_id, purchaseOrder: r.po_id ? { id: r.po_id, poNumber: r.po_number, status: r.po_status } : null }));
 }
 
 /** Goods received: adds stock and records an inventory movement. */
 async function receiveRestock(orderId) {
   const result = await withTransaction(async (client) => {
-    const o = (await client.query('SELECT id, product_id, quantity, status FROM restock_orders WHERE id = $1 FOR UPDATE', [orderId])).rows[0];
+    const o = (await client.query('SELECT id, product_id, quantity, status, purchase_order_item_id FROM restock_orders WHERE id = $1 FOR UPDATE', [orderId])).rows[0];
     if (!o) throw notFound('Restock order not found.');
     if (o.status !== 'approved') throw conflict(`This order is already ${o.status}.`);
+    // Stock for a restock order that became part of a purchase order is received through that purchase order (ordered vs received is tracked there).
+    if (o.purchase_order_item_id) throw conflict('This restock order is part of a purchase order. Receive it from the purchase order instead.', { code: 'RESTOCK_LINKED_TO_PO' });
     await client.query(`UPDATE restock_orders SET status = 'received', resolved_at = now() WHERE id = $1`, [orderId]);
     await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2', [o.quantity, o.product_id]);
-    await client.query(`INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id) VALUES ($1,'restock',$2,$3)`, [o.product_id, o.quantity, orderId]);
+    await client.query(`INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type) VALUES ($1,'restock',$2,$3,'restock_order')`, [o.product_id, o.quantity, orderId]);
     return o;
   });
   invalidateAll();

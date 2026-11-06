@@ -8,17 +8,20 @@ import { Async, Badge, Button, Card, ConfirmDialog, DataTable, EmptyState, Field
 import { inr, dateOnly } from '../utils/format';
 
 const STATUS = { in_stock: ['ok', 'In stock'], low_stock: ['warn', 'Low stock'], out_of_stock: ['bad', 'Out of stock'], expired: ['bad', 'Expired'] };
-const EMPTY = { name: '', sku: '', categoryId: '', purchasePrice: '', sellingPrice: '', stock: '0', minimumStock: '0', supplierId: '', leadTimeDays: '3', expiryDate: '' };
+const UNITS = [['pcs', 'Piece (pcs)'], ['kg', 'Kilogram (kg)'], ['g', 'Gram (g)'], ['l', 'Litre (l)'], ['ml', 'Millilitre (ml)'], ['m', 'Metre (m)'], ['pack', 'Pack'], ['box', 'Box'], ['dozen', 'Dozen']];
+const DECIMAL_UNITS = ['kg', 'g', 'l', 'ml', 'm'];
+const EMPTY = { name: '', sku: '', categoryId: '', unit: 'pcs', priceIncludesTax: true, purchasePrice: '', sellingPrice: '', stock: '0', minimumStock: '0', supplierId: '', leadTimeDays: '3', expiryDate: '' };
 
 function ProductForm({ product, lookups, onClose, onSaved }) {
   const toast = useToast();
   const [f, setF] = useState(product ? {
-    name: product.name, sku: product.sku, categoryId: String(product.categoryId), purchasePrice: String(product.purchasePrice), sellingPrice: String(product.sellingPrice),
+    name: product.name, sku: product.sku, categoryId: String(product.categoryId), unit: product.unit || 'pcs', priceIncludesTax: Boolean(product.priceIncludesTax), purchasePrice: String(product.purchasePrice), sellingPrice: String(product.sellingPrice),
     stock: String(product.stock), minimumStock: String(product.minimumStock), supplierId: product.supplierId ? String(product.supplierId) : '', leadTimeDays: String(product.leadTimeDays), expiryDate: product.expiryDate || '',
   } : EMPTY);
   const [errs, setErrs] = useState({});
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const decimalOk = DECIMAL_UNITS.includes(f.unit);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -27,12 +30,13 @@ function ProductForm({ product, lookups, onClose, onSaved }) {
     if (!f.categoryId) er.categoryId = 'Choose a category.';
     if (f.sellingPrice === '' || Number(f.sellingPrice) < 0) er.sellingPrice = 'Enter a selling price.';
     if (f.purchasePrice === '' || Number(f.purchasePrice) < 0) er.purchasePrice = 'Enter a purchase price.';
+    if (!decimalOk && (!Number.isInteger(Number(f.stock || 0)) || !Number.isInteger(Number(f.minimumStock || 0)))) er.stock = `${f.unit} must be a whole number. Choose kg, g, l, ml or m to use fractions.`;
     setErrs(er);
     if (Object.keys(er).length) return;
     setBusy(true);
     const body = {
-      name: f.name.trim(), sku: f.sku.trim() || undefined, categoryId: Number(f.categoryId), purchasePrice: Number(f.purchasePrice), sellingPrice: Number(f.sellingPrice),
-      stock: Number(f.stock || 0), minimumStock: Number(f.minimumStock || 0), supplierId: f.supplierId ? Number(f.supplierId) : null, leadTimeDays: Number(f.leadTimeDays || 0), expiryDate: f.expiryDate || null,
+      name: f.name.trim(), sku: f.sku.trim() || undefined, categoryId: Number(f.categoryId), unit: f.unit, priceIncludesTax: f.priceIncludesTax, purchasePrice: Number(f.purchasePrice), sellingPrice: Number(f.sellingPrice),
+      stock: parseFloat(f.stock || 0), minimumStock: parseFloat(f.minimumStock || 0), supplierId: f.supplierId ? Number(f.supplierId) : null, leadTimeDays: Number(f.leadTimeDays || 0), expiryDate: f.expiryDate || null,
     };
     try {
       if (product) await api.put(`/products/${product.id}`, body); else await api.post('/products', body);
@@ -53,10 +57,12 @@ function ProductForm({ product, lookups, onClose, onSaved }) {
         <Field label="Product name" error={errs.name} className="sm:col-span-2"><Input value={f.name} onChange={set('name')} /></Field>
         <Field label="SKU" hint="Leave empty to generate one."><Input value={f.sku} onChange={set('sku')} /></Field>
         <Field label="Category" error={errs.categoryId}><Select value={f.categoryId} onChange={set('categoryId')}><option value="">Choose…</option>{lookups.categories.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.taxRate}% tax)</option>)}</Select></Field>
-        <Field label="Selling price (₹, before tax)" error={errs.sellingPrice}><Input inputMode="decimal" value={f.sellingPrice} onChange={set('sellingPrice')} /></Field>
-        <Field label="Purchase price (₹)" error={errs.purchasePrice}><Input inputMode="decimal" value={f.purchasePrice} onChange={set('purchasePrice')} /></Field>
-        <Field label="Current stock"><Input inputMode="numeric" value={f.stock} onChange={set('stock')} /></Field>
-        <Field label="Minimum stock" hint="Below this, the product shows as low stock."><Input inputMode="numeric" value={f.minimumStock} onChange={set('minimumStock')} /></Field>
+        <Field label="Sold by (unit)" hint="Kg, g, l, ml and m allow fractions such as 0.75."><Select value={f.unit} onChange={set('unit')}>{UNITS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></Field>
+        <Field label={`Selling price (₹ per ${f.unit}, ${f.priceIncludesTax ? 'incl. tax' : 'before tax'})`} error={errs.sellingPrice}><Input inputMode="decimal" value={f.sellingPrice} onChange={set('sellingPrice')} /></Field>
+        <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" className="size-4" checked={f.priceIncludesTax} onChange={(e) => setF({ ...f, priceIncludesTax: e.target.checked })} />Selling price already includes GST (MRP). Tax is then taken out of the price instead of added on top.</label>
+        <Field label="Purchase price (₹, excl. GST)" hint="Used for profit. Updated automatically when you receive goods at a new cost." error={errs.purchasePrice}><Input inputMode="decimal" value={f.purchasePrice} onChange={set('purchasePrice')} /></Field>
+        <Field label={`Current stock (${f.unit})`} error={errs.stock}><Input inputMode={decimalOk ? 'decimal' : 'numeric'} value={f.stock} onChange={set('stock')} /></Field>
+        <Field label={`Minimum stock (${f.unit})`} hint="Below this, the product shows as low stock."><Input inputMode={decimalOk ? 'decimal' : 'numeric'} value={f.minimumStock} onChange={set('minimumStock')} /></Field>
         <Field label="Supplier"><Select value={f.supplierId} onChange={pickSupplier}><option value="">None</option>{lookups.suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
         <Field label="Supplier lead time (days)"><Input inputMode="numeric" value={f.leadTimeDays} onChange={set('leadTimeDays')} /></Field>
         <Field label="Expiry date" hint="Only for perishable items."><Input type="date" value={f.expiryDate} onChange={set('expiryDate')} /></Field>
@@ -89,8 +95,8 @@ export default function Products() {
 
   const columns = [
     { key: 'name', header: 'Product', render: (p) => <div><p className="font-semibold">{p.name}</p><p className="text-xs text-muted num">{p.sku} · {p.category}</p></div> },
-    { key: 'price', header: 'Price', align: 'right', render: (p) => <div><p>{inr(p.sellingPrice, 2)}</p><p className="text-xs text-muted">cost {inr(p.purchasePrice, 2)}</p></div> },
-    { key: 'stock', header: 'Stock', align: 'right', render: (p) => <div><p className="font-semibold">{p.stock}</p><p className="text-xs text-muted">min {p.minimumStock}</p></div> },
+    { key: 'price', header: 'Price', align: 'right', render: (p) => <div><p>{inr(p.sellingPrice, 2)}</p><p className="text-xs text-muted">{p.priceIncludesTax ? 'incl. tax · ' : ''}cost {inr(p.purchasePrice, 2)}</p></div> },
+    { key: 'stock', header: 'Stock', align: 'right', render: (p) => <div><p className="font-semibold">{p.stock}{p.unit && p.unit !== 'pcs' ? ` ${p.unit}` : ''}</p><p className="text-xs text-muted">min {p.minimumStock}</p></div> },
     { key: 'supplier', header: 'Supplier', render: (p) => <div><p>{p.supplier || '—'}</p><p className="text-xs text-muted">{p.leadTimeDays}-day lead time</p></div> },
     { key: 'expiry', header: 'Expiry', render: (p) => (p.expiryDate ? <span className={p.expiryStatus ? 'font-semibold text-warn' : ''}>{dateOnly(p.expiryDate)}</span> : <span className="text-muted">—</span>) },
     { key: 'status', header: 'Status', render: (p) => <Badge tone={STATUS[p.status][0]} dot>{STATUS[p.status][1]}</Badge> },

@@ -11,6 +11,7 @@ const config = require('../config');
 const inventory = require('../services/inventory');
 const { getProductStats, restockReasons } = require('../services/forecast');
 const { notFound } = require('../utils/errors');
+const { quantitySchema } = require('../utils/units');
 
 const router = express.Router();
 const id = z.coerce.number().int().positive();
@@ -28,7 +29,7 @@ router.get('/restock', mgr, asyncH(async (_req, res) => {
   const rows = await inventory.getRestockRecommendations();
   res.json({ count: rows.length, totalCost: Math.round(rows.reduce((a, r) => a + r.estimatedCost, 0)), rows });
 }));
-router.post('/restock/:productId/approve', mgr, validate({ params: z.object({ productId: id }), body: z.object({ quantity: z.coerce.number().int().min(1).max(100000).optional() }).default({}) }), asyncH(async (req, res) => {
+router.post('/restock/:productId/approve', mgr, validate({ params: z.object({ productId: id }), body: z.object({ quantity: quantitySchema.optional() }).default({}) }), asyncH(async (req, res) => {
   const out = await inventory.approveRestock(req.params.productId, req.body.quantity, req.user);
   await audit(req, 'inventory.restock_approved', { entityType: 'product', entityId: req.params.productId, summary: `Restock approved: ${out.quantity ?? req.body.quantity ?? ''} units`, newValue: out });
   res.status(201).json(out);

@@ -18,8 +18,10 @@ async function windowTotals(whereSql, params) {
        FROM sales s WHERE s.status = 'completed' AND ${whereSql}`,
     params,
   );
+  // Profit uses the cost, tax and discount stored ON THE SALE LINE (migration 009), so editing a product's price later never rewrites history.
+  // Lines created before that migration fall back to today's purchase price (flagged cost_source = 'estimated').
   const margin = await query(
-    `SELECT COALESCE(SUM(si.total - p.purchase_price * si.quantity),0) AS margin
+    `SELECT COALESCE(SUM(COALESCE(si.taxable_value, si.total - si.discount_share) - COALESCE(si.unit_cost, p.purchase_price) * si.quantity),0) AS margin
        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
       WHERE s.status = 'completed' AND ${whereSql}`,
     params,
@@ -29,7 +31,7 @@ async function windowTotals(whereSql, params) {
     orders: t.orders,
     revenue: r2(t.revenue),
     discount: r2(t.discount),
-    profit: r2(margin.rows[0].margin - t.discount),
+    profit: r2(margin.rows[0].margin),
     aov: t.orders ? r2(t.revenue / t.orders) : 0,
   };
 }
@@ -52,7 +54,7 @@ async function getOverview() {
         [TZ],
       ),
       query(
-        `SELECT p.name, SUM(si.quantity)::int AS units, SUM(si.total) AS revenue
+        `SELECT p.name, SUM(si.quantity) AS units, SUM(si.total) AS revenue
            FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
           WHERE s.status = 'completed' AND ${todayW} GROUP BY p.name ORDER BY units DESC LIMIT 5`,
         [TZ],
@@ -111,14 +113,14 @@ async function getSalesAnalytics(range = '7d') {
         params,
       ),
       query(
-        `SELECT c.name, SUM(si.total) AS revenue, SUM(si.quantity)::int AS units
+        `SELECT c.name, SUM(si.total) AS revenue, SUM(si.quantity) AS units
            FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
            JOIN categories c ON c.id = p.category_id
           WHERE s.status = 'completed' AND ${winW} GROUP BY c.name ORDER BY revenue DESC`,
         params,
       ),
       query(
-        `SELECT p.id, p.name, c.name AS category, SUM(si.quantity)::int AS units, SUM(si.total) AS revenue
+        `SELECT p.id, p.name, c.name AS category, SUM(si.quantity) AS units, SUM(si.total) AS revenue
            FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
            JOIN categories c ON c.id = p.category_id
           WHERE s.status = 'completed' AND ${winW} GROUP BY p.id, p.name, c.name ORDER BY units DESC LIMIT 10`,
@@ -162,7 +164,7 @@ async function getProductAnalytics(range = '30d') {
   const [stats, rev] = await Promise.all([
     getProductStats(),
     query(
-      `SELECT si.product_id, SUM(si.quantity)::int AS units, SUM(si.total) AS revenue, SUM(si.total - p.purchase_price * si.quantity) AS margin
+      `SELECT si.product_id, SUM(si.quantity) AS units, SUM(si.total) AS revenue, SUM(COALESCE(si.taxable_value, si.total - si.discount_share) - COALESCE(si.unit_cost, p.purchase_price) * si.quantity) AS margin
          FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
         WHERE s.status = 'completed' AND ${LOCAL}::date > (now() AT TIME ZONE $1)::date - $2::int GROUP BY 1`,
       [TZ, days],

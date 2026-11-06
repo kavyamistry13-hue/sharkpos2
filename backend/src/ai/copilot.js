@@ -144,7 +144,7 @@ async function hSalesDecline() {
     query(`SELECT c.name, COALESCE(SUM(si.total) FILTER (WHERE ${cur}),0) AS cur_rev, COALESCE(SUM(si.total) FILTER (WHERE ${prev}),0) AS prev_rev
              FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id JOIN categories c ON c.id = p.category_id
             WHERE s.status = 'completed' AND ${dayExpr} >= ${today} - 14 AND ${dayExpr} < ${today} GROUP BY c.name`, [TZ]),
-    query(`SELECT p.name, p.stock, COALESCE(SUM(si.quantity) FILTER (WHERE ${cur}),0)::int AS cur_units, COALESCE(SUM(si.quantity) FILTER (WHERE ${prev}),0)::int AS prev_units
+    query(`SELECT p.name, p.stock, COALESCE(SUM(si.quantity) FILTER (WHERE ${cur}),0)::numeric AS cur_units, COALESCE(SUM(si.quantity) FILTER (WHERE ${prev}),0)::numeric AS prev_units
              FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
             WHERE s.status = 'completed' AND ${dayExpr} >= ${today} - 14 AND ${dayExpr} < ${today} GROUP BY p.name, p.stock`, [TZ]),
     query(`SELECT ${dayExpr}::text AS d, SUM(s.total) AS rev FROM sales s WHERE s.status = 'completed' AND ${cur} GROUP BY 1 ORDER BY rev ASC LIMIT 1`, [TZ]),
