@@ -21,7 +21,7 @@ router.get('/status', asyncH(async (req, res) => {
 
 // Wipes THIS business's data and reloads the prepared demo dataset. Only for businesses flagged as demo — a real
 // customer's business can never be reset from here.
-router.post('/load', authorize('business_owner'), validate({ body: z.object({ confirm: z.literal(true, { errorMap: () => ({ message: 'Confirmation required' }) }) }) }), asyncH(async (req, res) => {
+router.post('/load', authorize('business_owner'), validate({ body: z.object({ confirm: z.literal(true, { error: 'Confirmation required' }) }) }), asyncH(async (req, res) => {
   if (!config.allowDemo || !(await isDemoBusiness(req.user.businessId))) throw forbidden('Demo reset is only available for demo businesses.');
   if (running.has(req.user.businessId)) throw conflict('Demo data is already being loaded. Please wait.');
   running.add(req.user.businessId);

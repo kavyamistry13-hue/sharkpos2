@@ -26,6 +26,9 @@ const base = z.object({
   expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().or(z.literal('').transform(() => null)),
 });
 
+// A partial update must not re-apply the create-time defaults (Zod 4 would otherwise reset stock, unit, etc. when they are omitted).
+const update = z.object(Object.fromEntries(Object.entries(base.shape).map(([k, v]) => [k, v instanceof z.ZodDefault ? v.def.innerType : v]))).partial();
+
 router.get('/lookups', asyncH(async (_req, res) => res.json(await svc.getLookups())));
 
 // POS search is open to every signed-in role; management list needs manager+
@@ -55,7 +58,7 @@ router.post('/', authorize('business_owner', 'manager'), validate({ body: base }
   res.status(201).json(p);
 }));
 
-router.put('/:id', authorize('business_owner', 'manager'), validate({ params: z.object({ id }), body: base.partial() }), asyncH(async (req, res) => {
+router.put('/:id', authorize('business_owner', 'manager'), validate({ params: z.object({ id }), body: update }), asyncH(async (req, res) => {
   const before = await svc.getProduct(req.params.id);
   const after = await svc.updateProduct(req.params.id, req.body, req.user.id);
   const changed = {}; const was = {};

@@ -94,7 +94,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
+      - name: 0/4 Check that production is configured (skips deployment cleanly when it is not)
+        id: preflight
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          API_URL: ${{ vars.API_URL }}
+          APP_URL: ${{ vars.APP_URL }}
+          PAGES_PROJECT: ${{ vars.PAGES_PROJECT }}
+        run: |
+          missing=""
+          for n in MIGRATION_DATABASE_URL RENDER_DEPLOY_HOOK_URL CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID API_URL APP_URL PAGES_PROJECT; do
+            [ -n "${!n}" ] || missing="$missing $n"
+          done
+          if [ -n "$missing" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Deployment skipped::Production is not configured. Add these to the 'production' environment (GitHub > Settings > Environments > production; secrets and variables):$missing"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: 1/4 Database migrations (free Render instances have no pre-deploy step, so they run here)
+        if: steps.preflight.outputs.configured == 'true'
         env:
           MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
         run: |
@@ -103,6 +125,7 @@ jobs:
           (cd backend && npm ci --omit=dev --silent)
           node database/migrate.js
       - name: 2/4 Deploy API (Render) and wait until the new version answers
+        if: steps.preflight.outputs.configured == 'true'
         env:
           RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
           API_URL: ${{ vars.API_URL }}
@@ -117,6 +140,7 @@ jobs:
           done
           echo "API did not report version $GITHUB_SHA within ~10 minutes." >&2; exit 1
       - name: 3/4 Deploy web app + API proxy (Cloudflare Pages)
+        if: steps.preflight.outputs.configured == 'true'
         working-directory: frontend
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -128,6 +152,7 @@ jobs:
           npm run build            # VITE_API_URL stays empty: the browser only talks to the Pages address
           npx wrangler pages deploy dist --project-name "$PAGES_PROJECT" --branch main --commit-dirty=true
       - name: 4/4 Smoke test through the public address (proves proxy, API and database)
+        if: steps.preflight.outputs.configured == 'true'
         env: { APP_URL: "${{ vars.APP_URL }}" }
         run: |
           set -euo pipefail

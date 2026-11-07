@@ -1,4 +1,5 @@
 const { badRequest } = require('../utils/errors');
+require('../utils/zodCompat');   // keeps the Zod 3 wording of validation messages
 
 /** validate({ body, query, params }) with zod schemas. Replaces req.* with the parsed value. */
 const validate = (schemas) => (req, _res, next) => {
