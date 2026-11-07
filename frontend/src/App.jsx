@@ -28,6 +28,7 @@ const Audit = lazy(() => import('./pages/Audit'));
 const Udhaar = lazy(() => import('./pages/Udhaar'));
 const Closing = lazy(() => import('./pages/Closing'));
 const Shifts = lazy(() => import('./pages/Shifts'));
+const Value = lazy(() => import('./pages/Value'));
 const Intelligence = lazy(() => import('./pages/Intelligence'));
 const Billing = lazy(() => import('./pages/Billing'));
 const Platform = lazy(() => import('./pages/Platform'));
@@ -70,6 +71,7 @@ export default function App() {
         <Route path="/udhaar" element={<Guard roles={mgr}><Udhaar /></Guard>} />
         <Route path="/closing" element={<Guard roles={mgr}><Closing /></Guard>} />
         <Route path="/shifts" element={<Shifts />} />
+        <Route path="/value" element={<Guard roles={mgr}><Value /></Guard>} />
         <Route path="/intelligence" element={<Guard roles={mgr}><Intelligence /></Guard>} />
         <Route path="/customers" element={<Guard roles={mgr}><Customers /></Guard>} />
         <Route path="/analytics" element={<Guard roles={mgr}><Analytics /></Guard>} />

@@ -3,12 +3,13 @@ import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { useAsync } from '../hooks/useAsync';
 import { Async, Badge, Card, CardHeader, DataTable, PageHeader, Stat, Tabs } from '../components/ui';
-import { ActionRow, SEV_TONE, TodayList } from '../components/TodayList';
+import { ActionRow, TodayList, useDecisions } from '../components/TodayList';
 import { inr, num, pct } from '../utils/format';
 
 const CATS = [['all', 'All'], ['stock', 'Stock'], ['money', 'Money'], ['suppliers', 'Suppliers'], ['profit', 'Profit'], ['operations', 'Operations']];
 
 function ActionCenter() {
+  const decisions = useDecisions();
   const [cat, setCat] = useState('all');
   const ac = useAsync(() => api.get('/intelligence/actions', cat === 'all' ? { limit: 100 } : { category: cat, limit: 100 }), [cat]);
   return (
@@ -18,7 +19,7 @@ function ActionCenter() {
       <Async state={ac} rows={5}>
         {(d) => d.actions.length === 0 ? <p className="px-5 pb-5 text-sm text-muted">Nothing here needs attention.</p> : (
           <div className="px-5 pb-4">
-            <ul className="divide-y divide-line-soft">{d.actions.map((a) => <ActionRow key={a.id} a={a} />)}</ul>
+            <ul className="divide-y divide-line-soft">{d.actions.map((a) => <ActionRow key={a.id} a={a} decisions={decisions} />)}</ul>
             {d.warnings && d.warnings.length > 0 && <p className="mt-2 text-xs text-warn">Some checks could not run: {d.warnings.join('; ')}</p>}
             <p className="mt-3 text-xs text-muted">{d.method} Score: {d.scoring}.</p>
           </div>

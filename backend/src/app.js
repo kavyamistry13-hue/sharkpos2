@@ -57,6 +57,7 @@ function createApp() {
   app.use('/api/shifts', require('./routes/shifts'));
   app.use('/api/reports', require('./routes/reports'));
   app.use('/api/intelligence', require('./routes/intelligence'));
+  app.use('/api/measurement', require('./routes/measurement'));
   app.use('/api/analytics/products', requireFeature('advancedReports', 'Advanced reports'));
   app.use('/api/analytics', require('./routes/analytics'));
   app.use('/api/ai', requireFeature('aiInsights', 'AI insights'), require('./routes/ai'));
