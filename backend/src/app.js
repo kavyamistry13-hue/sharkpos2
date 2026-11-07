@@ -53,6 +53,10 @@ function createApp() {
   app.use('/api/categories', require('./routes/categories'));
   app.use('/api/suppliers', require('./routes/suppliers'));
   app.use('/api/purchase-orders', require('./routes/purchaseOrders'));
+  app.use('/api/credit', require('./routes/credit'));
+  app.use('/api/shifts', require('./routes/shifts'));
+  app.use('/api/reports', require('./routes/reports'));
+  app.use('/api/intelligence', require('./routes/intelligence'));
   app.use('/api/analytics/products', requireFeature('advancedReports', 'Advanced reports'));
   app.use('/api/analytics', require('./routes/analytics'));
   app.use('/api/ai', requireFeature('aiInsights', 'AI insights'), require('./routes/ai'));

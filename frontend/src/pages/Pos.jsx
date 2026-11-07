@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Minus, Plus, Search, ShoppingBag, Trash2, UserPlus, X, Banknote, Smartphone, CreditCard, BadgeCheck, ShoppingCart } from 'lucide-react';
+import { Minus, Plus, Search, ShoppingBag, Trash2, UserPlus, X, Banknote, Smartphone, CreditCard, BadgeCheck, ShoppingCart, Wallet } from 'lucide-react';
 import { api } from '../services/api';
 import { useAsync, useDebounced } from '../hooks/useAsync';
 import { useToast } from '../hooks/useToast';
@@ -13,6 +13,7 @@ const PAY = [
   { value: 'cash', label: 'Cash', icon: Banknote },
   { value: 'upi', label: 'UPI', icon: Smartphone },
   { value: 'card', label: 'Card', icon: CreditCard },
+  { value: 'credit', label: 'Udhaar', icon: Wallet },
 ];
 
 function CustomerPicker({ customer, onChange }) {
@@ -161,6 +162,8 @@ export default function Pos() {
 
   const reset = () => { setCart([]); setCustomer(null); setDiscValue(''); setTendered(''); setBill(null); setApproval(null); setApprover({ email: '', password: '' }); setCartOpen(false); searchRef.current && searchRef.current.focus(); };
 
+  const creditInfo = useAsync(() => (pay === 'credit' && customer ? api.get(`/credit/customers/${customer.id}/balance`) : Promise.resolve(null)), [pay, customer && customer.id]);
+
   const submit = async (withApproval) => {
     if (submitting.current) return;            // a second tap while the first is in flight does nothing
     submitting.current = true;
@@ -234,7 +237,7 @@ export default function Pos() {
           <div className="flex justify-between"><dt className="text-muted">{bill && bill.taxIncluded > 0 ? (bill.taxAdded > 0 ? 'Tax' : 'Tax (already in prices)') : 'Tax'}</dt><dd>{bill ? inr(bill.tax, 2) : '—'}{bill && bill.taxIncluded > 0 && bill.taxAdded > 0 ? <span className="block text-[11px] text-muted">{inr(bill.taxIncluded, 2)} included, {inr(bill.taxAdded, 2)} added</span> : null}</dd></div>
           <div className="flex justify-between border-t border-line pt-2 text-xl font-extrabold"><dt>Total</dt><dd>{bill ? inr(bill.total, 2) : '₹0.00'}</dd></div>
         </dl>
-        <div role="radiogroup" aria-label="Payment method" className="grid grid-cols-3 gap-2">
+        <div role="radiogroup" aria-label="Payment method" className="grid grid-cols-4 gap-2">
           {PAY.map((p) => (
             <button key={p.value} role="radio" aria-checked={pay === p.value} onClick={() => setPay(p.value)}
               className={cx('flex flex-col items-center gap-1 rounded-lg border px-2 py-2.5 text-sm font-semibold transition-colors', pay === p.value ? 'border-brand bg-brand-soft text-brand' : 'border-line text-muted hover:bg-canvas')}>
@@ -248,7 +251,15 @@ export default function Pos() {
             {change !== null && <p className={cx('whitespace-nowrap text-sm font-semibold num', change < 0 ? 'text-bad' : 'text-ok')}>{change < 0 ? `Short ${inr(-change, 2)}` : `Change ${inr(change, 2)}`}</p>}
           </div>
         )}
-        <Button size="lg" className="w-full" disabled={!bill || cart.length === 0} loading={busy} onClick={() => submit(null)}><BadgeCheck className="size-5" aria-hidden="true" />Complete sale{bill ? ` · ${inr(bill.total, 2)}` : ''}</Button>
+        {pay === 'credit' && (
+          <div className="rounded-lg border border-line p-3 text-sm">
+            {!customer ? <p className="font-medium text-warn">Choose the customer above. Udhaar needs a customer.</p>
+              : !creditInfo.data ? <p className="text-muted">Checking credit…</p>
+              : !creditInfo.data.enabled ? <p className="font-medium text-warn">{customer.name} has no credit limit yet. A manager can set one in Udhaar.</p>
+              : <p>{customer.name} owes <b className="num">{inr(creditInfo.data.balance, 2)}</b> of a <b className="num">{inr(creditInfo.data.creditLimit, 0)}</b> limit. Available: <b className={cx('num', bill && bill.total > creditInfo.data.available ? 'text-bad' : 'text-ok')}>{inr(creditInfo.data.available, 2)}</b>{bill && bill.total > creditInfo.data.available ? ' — this bill is more than the limit.' : ''}</p>}
+          </div>
+        )}
+        <Button size="lg" className="w-full" disabled={!bill || cart.length === 0 || (pay === 'credit' && (!customer || !creditInfo.data || !creditInfo.data.enabled))} loading={busy} onClick={() => submit(null)}><BadgeCheck className="size-5" aria-hidden="true" />Complete sale{bill ? ` · ${inr(bill.total, 2)}` : ''}</Button>
       </div>
     </Card>
   );

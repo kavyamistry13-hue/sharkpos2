@@ -11,6 +11,7 @@ const { invalidateAll } = require('../utils/cache');
 const { assertQuantity, round3 } = require('../utils/units');
 
 const { getSettings } = require('./settings');
+const credit = require('./credit');
 
 // Highest discount (% of subtotal) each role may give without anyone else's approval.
 // The cashier limit is editable in Settings; manager/admin limits are fixed.
@@ -129,6 +130,7 @@ async function createSale(user, input, idempotencyKey) {
     const bill = computeBill(lines, input.discount || null);
     const { approvedBy } = await resolveDiscountAuthority(client, user, bill, input.approval);
 
+    if (input.paymentMethod === 'credit' && !input.customerId) throw badRequest('Choose a customer for a credit (udhaar) sale.', { code: 'CREDIT_NEEDS_CUSTOMER' });
     if (input.customerId) {
       const c = await client.query('SELECT id FROM customers WHERE id = $1', [input.customerId]);
       if (!c.rowCount) throw notFound('Customer not found.');
@@ -142,6 +144,8 @@ async function createSale(user, input, idempotencyKey) {
     const saleId = saleRes.rows[0].id;
     const invoiceNo = `INV-${saleRes.rows[0].created_at.toISOString().slice(0, 10).replace(/-/g, '')}-${String(saleId).padStart(5, '0')}`;
     await client.query('UPDATE sales SET invoice_no = $1 WHERE id = $2', [invoiceNo, saleId]);
+    // Credit (udhaar) sale: the whole bill goes on the customer's ledger, inside this same transaction (limit is checked under a row lock).
+    if (input.paymentMethod === 'credit') await credit.recordCreditSale(client, { customerId: input.customerId, saleId, amount: bill.total, userId: user.id });
 
     const meta = new Map(lines.map((l) => [l.productId, l]));
     for (const line of bill.items) {
@@ -295,11 +299,12 @@ async function listSales(user, f) {
 /** Full refund: marks the sale refunded and puts stock back. */
 async function refundSale(id, user) {
   await withTransaction(async (client) => {
-    const res = await client.query('SELECT id, status, total FROM sales WHERE id = $1 FOR UPDATE', [id]);
+    const res = await client.query('SELECT id, status, total, payment_method, customer_id FROM sales WHERE id = $1 FOR UPDATE', [id]);
     const s = res.rows[0];
     if (!s) throw notFound('Sale not found.');
     if (s.status !== 'completed') throw conflict(`This sale is already ${s.status}.`);
-    await client.query(`UPDATE sales SET status = 'refunded', refund_amount = total WHERE id = $1`, [id]);
+    await client.query(`UPDATE sales SET status = 'refunded', refund_amount = total, refunded_at = now(), refunded_by = $2 WHERE id = $1`, [id, user.id]);
+    if (s.payment_method === 'credit') await credit.reverseCreditSale(client, { customerId: s.customer_id, saleId: id, amount: s.total, userId: user.id });
     const items = await client.query('SELECT product_id, quantity FROM sale_items WHERE sale_id = $1', [id]);
     for (const it of items.rows) {
       await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2', [it.quantity, it.product_id]);

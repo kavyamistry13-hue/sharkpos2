@@ -3,6 +3,7 @@ import { Banknote, ReceiptText, PackageSearch, AlertTriangle, TrendingUp, Shield
 import { api } from '../services/api';
 import { useAsync } from '../hooks/useAsync';
 import { Async, Badge, Card, CardHeader, EmptyState, Meter, PageHeader, Stat, RiskBadge } from '../components/ui';
+import { TodayList } from '../components/TodayList';
 import { DailyBrief } from '../components/Brief';
 import OnboardingCard from '../components/OnboardingCard';
 import { TrendChart, RankBars } from '../components/charts';
@@ -19,6 +20,7 @@ export default function Dashboard() {
   const brief = useAsync(() => api.get('/ai/brief'), []);
   const restock = useAsync(() => api.get('/ai/restock'), []);
   const alerts = useAsync(() => api.get('/risk/alerts', { status: 'open', limit: 3 }), []);
+  const today = useAsync(() => api.get('/intelligence/today', { top: 5 }), []);
   const invAlerts = useAsync(() => api.get('/inventory/alerts'), []);
 
   return (
@@ -26,6 +28,7 @@ export default function Dashboard() {
       <PageHeader title="Dashboard" subtitle="Live view of today’s trading, stock and risk." />
       <OnboardingCard />
       <DailyBrief state={brief} />
+      <Card><CardHeader title="What should I do today?" subtitle="Top priorities from your own data." action={<Link to="/intelligence" className="text-sm font-semibold text-brand hover:underline">Open Action Center</Link>} /><Async state={today} rows={3}>{(d) => <TodayList data={d} />}</Async></Card>
 
       <Async state={overview} rows={3} errorText="Unable to load today’s numbers.">
         {(o) => (

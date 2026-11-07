@@ -26,6 +26,20 @@ async function addProduct(api, shop, over = {}) {
   return r.body;
 }
 
+async function addCustomer(api, shop, over = {}) {
+  const phone = `9${String(Math.floor(Math.random() * 1e9)).padStart(9, '0')}`;
+  const r = await api(shop.owner.token).post('/customers', { name: uniq('Cust '), phone, ...over });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  return r.body;
+}
+
+/** One-line sale helper. who = 'owner' | 'manager' | 'cashier'. Returns the API response (not asserted). */
+function sell(api, shop, productId, { quantity = 1, paymentMethod = 'cash', customerId, discount, who = 'owner' } = {}) {
+  return api(shop[who].token).post('/sales', { items: [{ productId, quantity }], paymentMethod, ...(customerId ? { customerId } : {}), ...(discount ? { discount } : {}) });
+}
+
 const todayIso = () => new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);   // store time is Asia/Kolkata (UTC+5:30)
 
-module.exports = { makeShop, addProduct, todayIso };
+const daysAgoIso = (n) => new Date(Date.now() + 5.5 * 3600e3 - n * 86400e3).toISOString().slice(0, 10);
+
+module.exports = { makeShop, addProduct, addCustomer, sell, todayIso, daysAgoIso };

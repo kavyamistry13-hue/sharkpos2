@@ -393,7 +393,7 @@ const totalRaw = PRODUCTS.reduce((a, p) => a + p.perDay, 0);
   log('Writing to the database…');
   await withSystemTransaction(async (client) => {
     // Remove this business's previous demo rows (row-level security limits every DELETE to this business).
-    for (const t of ['anomaly_alerts', 'restock_orders', 'goods_receipt_items', 'goods_receipts', 'supplier_price_history', 'purchase_order_items', 'purchase_orders', 'supplier_products', 'product_cost_history', 'inventory_movements', 'sale_items', 'sales', 'customers', 'products', 'suppliers', 'categories', 'settings']) {
+    for (const t of ['anomaly_alerts', 'restock_orders', 'goods_receipt_items', 'goods_receipts', 'supplier_price_history', 'purchase_order_items', 'purchase_orders', 'supplier_products', 'product_cost_history', 'inventory_movements', 'cash_reconciliations', 'shifts', 'credit_ledger', 'sale_items', 'sales', 'customers', 'products', 'suppliers', 'categories', 'settings']) {
       await client.query(`DELETE FROM ${t}`);
     }
     // Demo staff: keep existing accounts (audit history references them) and refresh their details.
@@ -451,6 +451,7 @@ const totalRaw = PRODUCTS.reduce((a, p) => a + p.perDay, 0);
         ],
       );
     }
+    await client.query(`UPDATE sales SET refunded_at = created_at WHERE status = 'refunded' AND refunded_at IS NULL`);   // demo refunds happen on the day of sale
     const costOf = new Map(products.map((p) => [p.id, p.purchase]));   // demo cost is constant, so the snapshot equals the product cost
     const items = [];
     orders.forEach((o) => o.bill.items.forEach((it) => items.push([o.id + offSale, it.productId + offProd, it.quantity, it.unitPrice, it.lineTotal, costOf.get(it.productId), it.taxRate, it.discountShare, it.taxableValue, it.tax])));

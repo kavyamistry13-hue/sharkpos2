@@ -25,6 +25,10 @@ const Why = lazy(() => import('./pages/Why'));
 const Present = lazy(() => import('./pages/Present'));
 import Register from './pages/Register';
 const Audit = lazy(() => import('./pages/Audit'));
+const Udhaar = lazy(() => import('./pages/Udhaar'));
+const Closing = lazy(() => import('./pages/Closing'));
+const Shifts = lazy(() => import('./pages/Shifts'));
+const Intelligence = lazy(() => import('./pages/Intelligence'));
 const Billing = lazy(() => import('./pages/Billing'));
 const Platform = lazy(() => import('./pages/Platform'));
 
@@ -63,6 +67,10 @@ export default function App() {
         <Route path="/inventory" element={<Guard roles={mgr}><Inventory /></Guard>} />
         <Route path="/purchasing" element={<Guard roles={mgr}><Purchasing /></Guard>} />
         <Route path="/sales" element={<Sales />} />
+        <Route path="/udhaar" element={<Guard roles={mgr}><Udhaar /></Guard>} />
+        <Route path="/closing" element={<Guard roles={mgr}><Closing /></Guard>} />
+        <Route path="/shifts" element={<Shifts />} />
+        <Route path="/intelligence" element={<Guard roles={mgr}><Intelligence /></Guard>} />
         <Route path="/customers" element={<Guard roles={mgr}><Customers /></Guard>} />
         <Route path="/analytics" element={<Guard roles={mgr}><Analytics /></Guard>} />
         <Route path="/copilot" element={<Guard roles={mgr}><Copilot /></Guard>} />

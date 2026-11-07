@@ -26,7 +26,7 @@ router.post(
     body: z.object({
       ...cart,
       customerId: id.nullable().optional(),
-      paymentMethod: z.enum(['cash', 'upi', 'card']),
+      paymentMethod: z.enum(['cash', 'upi', 'card', 'credit']),
       approval: z.object({ email: z.string().email(), password: z.string().min(1) }).nullable().optional(),
     }),
   }),
@@ -48,7 +48,7 @@ router.get(
   validate({
     query: z.object({
       from: date.optional(), to: date.optional(), employeeId: id.optional(), q: z.string().max(60).optional(),
-      payment: z.enum(['cash', 'upi', 'card']).optional(), status: z.enum(['completed', 'refunded', 'cancelled']).optional(),
+      payment: z.enum(['cash', 'upi', 'card', 'credit']).optional(), status: z.enum(['completed', 'refunded', 'cancelled']).optional(),
       page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(25),
     }),
   }),

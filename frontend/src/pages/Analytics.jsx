@@ -37,7 +37,7 @@ export default function Analytics() {
               <Card><CardHeader title="Average order value" subtitle={`Per ${unit[s.granularity]}`} /><div className="px-3 pb-4">{s.trend.length ? <TrendChart data={s.trend} variant="line" series={[{ key: 'aov', name: 'Average order value', format: (v) => inr(v, 2) }]} yFormat={(v) => `₹${v}`} /> : <EmptyState title="No sales in this range" />}</div></Card>
               <Card><CardHeader title="Category performance" subtitle="Item sales by category" /><div className="px-3 pb-4">{s.categories.length ? <RankBars data={s.categories} valueKey="revenue" name="Revenue" format={inr} nameWidth={140} /> : <EmptyState title="No sales in this range" />}</div></Card>
               <Card><CardHeader title="Top-selling products" subtitle="Units sold" /><div className="px-3 pb-4">{s.topProducts.length ? <RankBars data={s.topProducts} valueKey="units" name="Units" nameWidth={160} /> : <EmptyState title="No sales in this range" />}</div></Card>
-              <Card><CardHeader title="Payment methods" subtitle="Share of revenue" /><div className="px-3 pb-4">{s.payments.length ? <RankBars data={s.payments.map((p) => ({ ...p, name: p.method.toUpperCase() }))} valueKey="revenue" name="Revenue" format={inr} nameWidth={70} height={150} /> : <EmptyState title="No sales in this range" />}</div></Card>
+              <Card><CardHeader title="Payment methods" subtitle="Share of revenue" /><div className="px-3 pb-4">{s.payments.length ? <RankBars data={s.payments.map((p) => ({ ...p, name: p.method === 'credit' ? 'UDHAAR' : p.method.toUpperCase() }))} valueKey="revenue" name="Revenue" format={inr} nameWidth={70} height={150} /> : <EmptyState title="No sales in this range" />}</div></Card>
             </div>
           </>
         )}
