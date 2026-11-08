@@ -14,14 +14,14 @@ const r2 = (n) => Math.round(n * 100) / 100;
 
 async function windowTotals(whereSql, params) {
   const sales = await query(
-    `SELECT COUNT(*)::int AS orders, COALESCE(SUM(s.total),0) AS revenue, COALESCE(SUM(s.discount),0) AS discount
+    `SELECT COUNT(*)::int AS orders, COALESCE(SUM(s.total - s.refund_amount),0) AS revenue, COALESCE(SUM(s.discount),0) AS discount
        FROM sales s WHERE s.status = 'completed' AND ${whereSql}`,
     params,
   );
   // Profit uses the cost, tax and discount stored ON THE SALE LINE (migration 009), so editing a product's price later never rewrites history.
   // Lines created before that migration fall back to today's purchase price (flagged cost_source = 'estimated').
   const margin = await query(
-    `SELECT COALESCE(SUM(COALESCE(si.taxable_value, si.total - si.discount_share) - COALESCE(si.unit_cost, p.purchase_price) * si.quantity),0) AS margin
+    `SELECT COALESCE(SUM((COALESCE(si.taxable_value, si.total - si.discount_share) / si.quantity - COALESCE(si.unit_cost, p.purchase_price)) * (si.quantity - si.returned_qty)),0) AS margin
        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
       WHERE s.status = 'completed' AND ${whereSql}`,
     params,
@@ -49,7 +49,7 @@ async function getOverview() {
       query(`SELECT COUNT(*)::int AS open, COUNT(*) FILTER (WHERE severity IN ('high','critical'))::int AS severe
                FROM anomaly_alerts WHERE status = 'open'`),
       query(
-        `SELECT EXTRACT(HOUR FROM ${LOCAL})::int AS hour, COUNT(*)::int AS orders, COALESCE(SUM(s.total),0) AS revenue
+        `SELECT EXTRACT(HOUR FROM ${LOCAL})::int AS hour, COUNT(*)::int AS orders, COALESCE(SUM(s.total - s.refund_amount),0) AS revenue
            FROM sales s WHERE s.status = 'completed' AND ${todayW} GROUP BY 1 ORDER BY 1`,
         [TZ],
       ),
@@ -108,7 +108,7 @@ async function getSalesAnalytics(range = '7d') {
       windowTotals(winW, params),
       windowTotals(prevW, params),
       query(
-        `SELECT ${bucket}::text AS bucket, COUNT(*)::int AS orders, COALESCE(SUM(s.total),0) AS revenue
+        `SELECT ${bucket}::text AS bucket, COUNT(*)::int AS orders, COALESCE(SUM(s.total - s.refund_amount),0) AS revenue
            FROM sales s WHERE s.status = 'completed' AND ${winW} GROUP BY 1 ORDER BY 1`,
         params,
       ),
@@ -127,8 +127,8 @@ async function getSalesAnalytics(range = '7d') {
         params,
       ),
       query(
-        `SELECT s.payment_method AS method, COUNT(*)::int AS orders, COALESCE(SUM(s.total),0) AS revenue
-           FROM sales s WHERE s.status = 'completed' AND ${winW} GROUP BY 1 ORDER BY revenue DESC`,
+        `SELECT sp.method AS method, COUNT(*)::int AS orders, COALESCE(SUM(sp.amount),0) AS revenue
+           FROM sale_payments sp JOIN sales s ON s.id = sp.sale_id WHERE s.status = 'completed' AND ${winW} GROUP BY 1 ORDER BY revenue DESC`,
         params,
       ),
       // Fixed "sales today / this week / this month" cards, independent of the selected range
@@ -164,7 +164,7 @@ async function getProductAnalytics(range = '30d') {
   const [stats, rev] = await Promise.all([
     getProductStats(),
     query(
-      `SELECT si.product_id, SUM(si.quantity) AS units, SUM(si.total) AS revenue, SUM(COALESCE(si.taxable_value, si.total - si.discount_share) - COALESCE(si.unit_cost, p.purchase_price) * si.quantity) AS margin
+      `SELECT si.product_id, SUM(si.quantity - si.returned_qty) AS units, SUM(si.total * (si.quantity - si.returned_qty) / si.quantity) AS revenue, SUM((COALESCE(si.taxable_value, si.total - si.discount_share) / si.quantity - COALESCE(si.unit_cost, p.purchase_price)) * (si.quantity - si.returned_qty)) AS margin
          FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
         WHERE s.status = 'completed' AND ${LOCAL}::date > (now() AT TIME ZONE $1)::date - $2::int GROUP BY 1`,
       [TZ, days],

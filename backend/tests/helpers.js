@@ -40,7 +40,7 @@ function client(base) {
   return (token, extraHeaders = {}) => {
     const call = async (method, p, body, headers = {}) => {
       // Every POST /sales needs an Idempotency-Key; ordinary tests get a fresh one, idempotency tests pass their own.
-      if (method === 'POST' && p === '/sales' && !Object.keys(headers).some((k) => k.toLowerCase() === 'idempotency-key')) headers = { ...headers, 'idempotency-key': require('crypto').randomUUID() };
+      if (method === 'POST' && (p === '/sales' || /^\/held-bills\/\d+\/complete$/.test(p) || /^\/sales\/\d+\/returns$/.test(p)) && !Object.keys(headers).some((k) => k.toLowerCase() === 'idempotency-key')) headers = { ...headers, 'idempotency-key': require('crypto').randomUUID() };
       const res = await fetch(base + p, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...extraHeaders, ...headers }, body: body === undefined ? undefined : JSON.stringify(body) });
       let json = null;
       try { json = await res.json(); } catch { /* no body */ }

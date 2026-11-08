@@ -106,6 +106,12 @@ async function reverseCreditSale(client, { customerId, saleId, amount, userId })
   await client.query(`INSERT INTO credit_ledger (customer_id, entry_type, effect, amount, sale_id, note, created_by) VALUES ($1,'refund',-1,$2,$3,'Sale refunded',$4)`, [customerId, amount, saleId, userId]);
 }
 
+/** Partial-return version of reverseCreditSale: reduces what the customer owes by `amount`, tied to one return record. */
+async function reverseCreditAmount(client, { customerId, saleId, returnId, amount, userId }) {
+  await loadCustomer(client.query.bind(client), customerId, true);
+  await client.query(`INSERT INTO credit_ledger (customer_id, entry_type, effect, amount, sale_id, return_id, note, created_by) VALUES ($1,'refund',-1,$2,$3,$4,'Items returned',$5)`, [customerId, amount, saleId, returnId, userId]);
+}
+
 async function recordPayment(user, customerId, { amount, method, note }) {
   const amt = r2(amount);
   if (!(amt > 0)) throw badRequest('Enter an amount greater than zero.');
@@ -215,4 +221,4 @@ async function buildReminder(customerId, { lang = 'en' } = {}) {
   return { customerId: acct.customerId, name: acct.name, phone: acct.phone, whatsappNumber: wa, balance: acct.balance, oldestDays: acct.aging.oldestDays, lang, message, link: `https://wa.me/${wa}?text=${encodeURIComponent(message)}`, sent: false };
 }
 
-module.exports = { computeAging, getBalance, getAccount, recordCreditSale, reverseCreditSale, recordPayment, adjust, setCreditLimit, listDebtors, summary, buildReminder, waPhone, reminderMessage, BUCKETS };
+module.exports = { computeAging, getBalance, getAccount, recordCreditSale, reverseCreditSale, reverseCreditAmount, recordPayment, adjust, setCreditLimit, listDebtors, summary, buildReminder, waPhone, reminderMessage, BUCKETS };

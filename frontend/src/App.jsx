@@ -30,6 +30,8 @@ const Closing = lazy(() => import('./pages/Closing'));
 const Shifts = lazy(() => import('./pages/Shifts'));
 const Value = lazy(() => import('./pages/Value'));
 const Intelligence = lazy(() => import('./pages/Intelligence'));
+const OwnerToday = lazy(() => import('./pages/OwnerToday'));
+const Counter = lazy(() => import('./pages/Counter'));
 const Billing = lazy(() => import('./pages/Billing'));
 const Platform = lazy(() => import('./pages/Platform'));
 
@@ -41,7 +43,7 @@ function Guard({ roles, children }) {
   return children;
 }
 
-const home = (u) => (u.role === 'cashier' ? '/pos' : u.role === 'platform_admin' ? '/platform' : '/dashboard');
+const home = (u) => (u.role === 'cashier' ? '/counter' : u.role === 'platform_admin' ? '/platform' : '/today');
 
 export default function App() {
   const { user, ready } = useAuth();
@@ -62,6 +64,8 @@ export default function App() {
       <Route path="/platform" element={<Guard roles={['platform_admin']}><Platform /></Guard>} />
       <Route path="/present" element={<Guard roles={mgr}><Present /></Guard>} />
       <Route element={<Guard><AppLayout /></Guard>}>
+        <Route path="/today" element={<Guard roles={mgr}><OwnerToday /></Guard>} />
+        <Route path="/counter" element={<Counter />} />
         <Route path="/dashboard" element={<Guard roles={mgr}><Dashboard /></Guard>} />
         <Route path="/pos" element={<Pos />} />
         <Route path="/products" element={<Guard roles={mgr}><Products /></Guard>} />

@@ -49,6 +49,7 @@ function createApp() {
   app.use('/api/billing', require('./routes/billing'));
   app.use('/api/products', require('./routes/products'));
   app.use('/api/sales', require('./routes/sales'));
+  app.use('/api/held-bills', require('./routes/heldBills'));
   app.use('/api/inventory', require('./routes/inventory'));
   app.use('/api/categories', require('./routes/categories'));
   app.use('/api/suppliers', require('./routes/suppliers'));

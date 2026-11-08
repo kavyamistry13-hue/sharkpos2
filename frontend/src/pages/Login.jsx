@@ -33,7 +33,7 @@ export default function Login() {
     try {
       const r = await login(email.trim(), password, businessId);
       if (r.businesses) { setChoices(r.businesses); setBusy(false); return; }
-      nav(r.user.role === 'cashier' ? '/pos' : r.user.role === 'platform_admin' ? '/platform' : '/dashboard', { replace: true });
+      nav(r.user.role === 'cashier' ? '/counter' : r.user.role === 'platform_admin' ? '/platform' : '/today', { replace: true });
     } catch (err) {
       setError(err.message);
       setBusy(false);

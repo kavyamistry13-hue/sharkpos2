@@ -12,25 +12,28 @@ const PAY_METHODS = ['cash', 'upi', 'card'];
 /**
  * Money movements inside one window. The window is described by three SQL predicates sharing one parameter list:
  *   salesW   → rows of `sales s` created in the window
- *   refundW  → rows of `sales s` whose refund was processed in the window
+ *   refundW  → rows of `sale_returns r` processed in the window (every refund — full or partial — is a return record)
  *   payW     → rows of `credit_ledger l` created in the window
  * Sales are counted when rung up (including ones refunded later); a refund is counted when it is processed. Cash expected follows the same rule.
  */
 async function activity(q, { salesW, refundW, payW, params }) {
-  const [sales, byMethod, refunds, pays, credit, items, profit] = await Promise.all([
+  const [sales, byMethod, refunds, refundN, pays, credit, items, profit] = await Promise.all([
     q(`SELECT COUNT(*)::int AS n, COALESCE(SUM(s.subtotal),0) AS gross, COALESCE(SUM(s.discount),0) AS discount, COALESCE(SUM(s.tax),0) AS tax, COALESCE(SUM(s.total),0) AS total
          FROM sales s WHERE s.status IN ('completed','refunded') AND ${salesW}`, params),
-    q(`SELECT s.payment_method AS method, COUNT(*)::int AS n, COALESCE(SUM(s.total),0) AS amount
-         FROM sales s WHERE s.status IN ('completed','refunded') AND ${salesW} GROUP BY 1`, params),
-    q(`SELECT s.payment_method AS method, COUNT(*)::int AS n, COALESCE(SUM(s.refund_amount),0) AS amount
-         FROM sales s WHERE s.status = 'refunded' AND ${refundW} GROUP BY 1`, params),
+    // Tender lines (a split bill contributes to each method it was paid with).
+    q(`SELECT sp.method AS method, COUNT(*)::int AS n, COALESCE(SUM(sp.amount),0) AS amount
+         FROM sale_payments sp JOIN sales s ON s.id = sp.sale_id WHERE s.status IN ('completed','refunded') AND ${salesW} GROUP BY 1`, params),
+    // Money handed back, by method, when the return was processed.
+    q(`SELECT rf.method AS method, COUNT(*)::int AS n, COALESCE(SUM(rf.amount),0) AS amount
+         FROM sale_return_refunds rf JOIN sale_returns r ON r.id = rf.return_id WHERE ${refundW} GROUP BY 1`, params),
+    q(`SELECT COUNT(*)::int AS n FROM sale_returns r WHERE ${refundW}`, params),
     q(`SELECT l.payment_method AS method, COUNT(*)::int AS n, COALESCE(SUM(l.amount),0) AS amount
          FROM credit_ledger l WHERE l.entry_type = 'payment' AND ${payW} GROUP BY 1`, params),
     q(`SELECT COALESCE(SUM(l.amount) FILTER (WHERE l.entry_type = 'sale'),0) AS given
          FROM credit_ledger l WHERE ${payW}`, params),
-    q(`SELECT COALESCE(SUM(si.quantity),0) AS units, COUNT(DISTINCT si.product_id)::int AS products
+    q(`SELECT COALESCE(SUM(si.quantity - si.returned_qty),0) AS units, COUNT(DISTINCT si.product_id) FILTER (WHERE si.quantity > si.returned_qty)::int AS products
          FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.status = 'completed' AND ${salesW}`, params),
-    q(`SELECT COALESCE(SUM(COALESCE(si.taxable_value, si.total - si.discount_share) - COALESCE(si.unit_cost, p.purchase_price) * si.quantity),0) AS profit
+    q(`SELECT COALESCE(SUM((COALESCE(si.taxable_value, si.total - si.discount_share) / si.quantity - COALESCE(si.unit_cost, p.purchase_price)) * (si.quantity - si.returned_qty)),0) AS profit
          FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id WHERE s.status = 'completed' AND ${salesW}`, params),
   ]);
   const pick = (rows, m) => rows.find((r) => r.method === m) || { n: 0, amount: 0 };
@@ -40,7 +43,7 @@ async function activity(q, { salesW, refundW, payW, params }) {
   const cashRefunds = r2(pick(refunds.rows, 'cash').amount);
   const cashPayments = r2(pick(pays.rows, 'cash').amount);
   return {
-    sales: { count: t.n, grossSales: r2(t.gross), discounts: r2(t.discount), tax: r2(t.tax), billedTotal: r2(t.total), refunds: refundTotal, refundCount: refunds.rows.reduce((a, r) => a + r.n, 0), netSales: r2(t.total - refundTotal), avgBill: t.n ? r2(t.total / t.n) : 0, unitsSold: items.rows[0].units, productsSold: items.rows[0].products, grossProfit: r2(profit.rows[0].profit) },
+    sales: { count: t.n, grossSales: r2(t.gross), discounts: r2(t.discount), tax: r2(t.tax), billedTotal: r2(t.total), refunds: refundTotal, refundCount: refundN.rows[0].n, netSales: r2(t.total - refundTotal), avgBill: t.n ? r2(t.total / t.n) : 0, unitsSold: items.rows[0].units, productsSold: items.rows[0].products, grossProfit: r2(profit.rows[0].profit) },
     payments: METHODS.map((m) => ({ method: m, count: pick(byMethod.rows, m).n, amount: r2(pick(byMethod.rows, m).amount) })),
     refundsByMethod: METHODS.map((m) => ({ method: m, count: pick(refunds.rows, m).n, amount: r2(pick(refunds.rows, m).amount) })).filter((x) => x.count > 0),
     creditCollected: { total: r2(pays.rows.reduce((a, r) => a + r.amount, 0)), methods: PAY_METHODS.map((m) => ({ method: m, count: pick(pays.rows, m).n, amount: r2(pick(pays.rows, m).amount) })) },
@@ -49,7 +52,7 @@ async function activity(q, { salesW, refundW, payW, params }) {
   };
 }
 
-const dayPredicates = { salesW: `(s.created_at AT TIME ZONE $1)::date = $2::date`, refundW: `(COALESCE(s.refunded_at, s.updated_at) AT TIME ZONE $1)::date = $2::date`, payW: `(l.created_at AT TIME ZONE $1)::date = $2::date` };
+const dayPredicates = { salesW: `(s.created_at AT TIME ZONE $1)::date = $2::date`, refundW: `(r.created_at AT TIME ZONE $1)::date = $2::date`, payW: `(l.created_at AT TIME ZONE $1)::date = $2::date` };
 
 async function resolveDate(date) {
   const today = await todayLocal();
@@ -84,9 +87,9 @@ async function closingReport(dateInput) {
     dayRecon(date),
     query(`SELECT sh.id, sh.status, sh.opened_at, sh.closed_at, sh.opening_cash, sh.expected_cash, sh.counted_cash, sh.variance, u.name AS cashier
              FROM shifts sh JOIN users u ON u.id = sh.user_id WHERE (sh.opened_at AT TIME ZONE $1)::date = $2::date ORDER BY sh.opened_at`, [tz, date]),
-    query(`SELECT u.name AS cashier, COUNT(*)::int AS bills, COALESCE(SUM(s.total),0) AS total, COALESCE(SUM(s.total) FILTER (WHERE s.payment_method = 'cash'),0) AS cash
+    query(`SELECT u.name AS cashier, COUNT(*)::int AS bills, COALESCE(SUM(s.total),0) AS total, COALESCE(SUM((SELECT SUM(sp.amount) FROM sale_payments sp WHERE sp.sale_id = s.id AND sp.method = 'cash')),0) AS cash
              FROM sales s JOIN users u ON u.id = s.employee_id WHERE s.status IN ('completed','refunded') AND (s.created_at AT TIME ZONE $1)::date = $2::date GROUP BY u.name ORDER BY total DESC`, [tz, date]),
-    query(`SELECT p.name, SUM(si.quantity) AS units, SUM(si.total) AS revenue FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
+    query(`SELECT p.name, SUM(si.quantity - si.returned_qty) AS units, SUM(si.total * (si.quantity - si.returned_qty) / si.quantity) AS revenue FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
             WHERE s.status = 'completed' AND (s.created_at AT TIME ZONE $1)::date = $2::date GROUP BY p.name ORDER BY revenue DESC LIMIT 5`, [tz, date]),
     query(`SELECT COALESCE(SUM(gi.quantity),0) AS units, COALESCE(SUM(gi.quantity * gi.unit_cost),0) AS value, COUNT(DISTINCT g.id)::int AS deliveries
              FROM goods_receipts g JOIN goods_receipt_items gi ON gi.goods_receipt_id = g.id WHERE (g.received_at AT TIME ZONE $1)::date = $2::date`, [tz, date]),
@@ -140,4 +143,4 @@ async function listReconciliations({ from, to, limit = 60 } = {}) {
   return rows.map(mapRecon);
 }
 
-module.exports = { activity, closingReport, recordReconciliation, listReconciliations, suggestedOpening, METHODS };
+module.exports = { activity, dayPredicates, closingReport, recordReconciliation, listReconciliations, suggestedOpening, METHODS };

@@ -88,11 +88,47 @@ async function resolveDiscountAuthority(client, user, bill, approval) {
   return { approvedBy: approver.id };
 }
 
-/** What makes two submissions "the same sale": cashier, items (merged, ordered), discount, customer, payment method. Never secrets. */
+/**
+ * Turns the payment part of a request into tender lines that add up to the bill EXACTLY (integer paise — no rounding slack).
+ *   paymentMethod only      → one line for the whole bill (the original behaviour)
+ *   payments: [{method, amount}] → split payment; each method at most once; lines must sum to the total (no over- or under-payment).
+ * Credit (udhaar) is just another line: the part the customer will pay later. A zero-value bill (100% discount) has no tender lines.
+ */
+function resolvePayments(input, totalPaise) {
+  const given = input.payments && input.payments.length ? input.payments : null;
+  if (totalPaise === 0) {
+    if (given && given.some((p) => toPaise(p.amount) > 0)) throw badRequest('This bill is ₹0, so there is nothing to pay.', { code: 'PAYMENT_EXCEEDS_BILL', total: 0, paid: given.reduce((a, p) => a + toPaise(p.amount), 0) / 100 });
+    return { lines: [], primary: input.paymentMethod || (given && given[0].method) || 'cash' };
+  }
+  let lines;
+  if (given) {
+    const seen = new Set();
+    lines = given.map((p) => {
+      const exact = Number(p.amount) * 100;
+      if (Math.abs(exact - Math.round(exact)) > 1e-6) throw badRequest('Payment amounts can have at most 2 decimals.', { code: 'PAYMENT_PRECISION' });
+      if (seen.has(p.method)) throw badRequest(`Use ${p.method} only once. Add the amounts together.`, { code: 'DUPLICATE_PAYMENT_METHOD' });
+      seen.add(p.method);
+      return { method: p.method, paise: Math.round(exact) };
+    });
+    const paid = lines.reduce((a, l) => a + l.paise, 0);
+    if (paid !== totalPaise) {
+      const short = paid < totalPaise;
+      throw badRequest(short ? `Payments add up to ₹${paid / 100} but the bill is ₹${totalPaise / 100}. ₹${(totalPaise - paid) / 100} is still unpaid.` : `Payments add up to ₹${paid / 100}, ₹${(paid - totalPaise) / 100} more than the bill of ₹${totalPaise / 100}.`,
+        { code: short ? 'PAYMENT_SHORT' : 'PAYMENT_EXCEEDS_BILL', total: totalPaise / 100, paid: paid / 100, difference: Math.abs(totalPaise - paid) / 100 });
+    }
+  } else {
+    if (!input.paymentMethod) throw badRequest('Choose a payment method.', { code: 'PAYMENT_REQUIRED' });
+    lines = [{ method: input.paymentMethod, paise: totalPaise }];
+  }
+  return { lines, primary: lines.length === 1 ? lines[0].method : 'split' };
+}
+
+/** What makes two submissions "the same sale": cashier, items (merged, ordered), discount, customer, payment lines, held bill. Never secrets. */
 function requestHash(user, input, merged) {
   const items = [...merged].map((i) => [i.productId, i.quantity]).sort((a, b) => a[0] - b[0]);
   const d = input.discount ? [input.discount.type, Number(input.discount.value)] : null;
-  return crypto.createHash('sha256').update(JSON.stringify({ u: user.id, i: items, d, c: input.customerId || null, p: input.paymentMethod })).digest('hex');
+  const pl = input.payments && input.payments.length ? input.payments.map((p) => [p.method, toPaise(p.amount)]).sort((a, b) => (a[0] < b[0] ? -1 : 1)) : null;
+  return crypto.createHash('sha256').update(JSON.stringify({ u: user.id, i: items, d, c: input.customerId || null, p: input.paymentMethod || null, pl, h: input.heldBillId || null })).digest('hex');
 }
 
 /**
@@ -130,7 +166,18 @@ async function createSale(user, input, idempotencyKey) {
     const bill = computeBill(lines, input.discount || null);
     const { approvedBy } = await resolveDiscountAuthority(client, user, bill, input.approval);
 
-    if (input.paymentMethod === 'credit' && !input.customerId) throw badRequest('Choose a customer for a credit (udhaar) sale.', { code: 'CREDIT_NEEDS_CUSTOMER' });
+    const pay = resolvePayments(input, toPaise(bill.total));
+    const creditLine = pay.lines.find((l) => l.method === 'credit');
+    if (creditLine && !input.customerId) throw badRequest('Choose a customer for a credit (udhaar) sale.', { code: 'CREDIT_NEEDS_CUSTOMER' });
+
+    // A held bill is completed exactly once: lock it, check it is still open and the caller may complete it, then mark it in THIS transaction.
+    let held = null;
+    if (input.heldBillId) {
+      held = (await client.query('SELECT id, status, created_by FROM held_bills WHERE id = $1 FOR UPDATE', [input.heldBillId])).rows[0];
+      if (!held) throw notFound('Held bill not found.');
+      if (user.role === 'cashier' && held.created_by !== user.id) throw notFound('Held bill not found.');
+      if (held.status !== 'held') throw conflict(`This held bill is already ${held.status}.`, { code: 'HELD_BILL_NOT_OPEN', status: held.status });
+    }
     if (input.customerId) {
       const c = await client.query('SELECT id FROM customers WHERE id = $1', [input.customerId]);
       if (!c.rowCount) throw notFound('Customer not found.');
@@ -139,13 +186,14 @@ async function createSale(user, input, idempotencyKey) {
     const saleRes = await client.query(
       `INSERT INTO sales (customer_id, employee_id, subtotal, discount, tax, total, payment_method, discount_approved_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, created_at`,
-      [input.customerId || null, user.id, bill.subtotal, bill.discount, bill.tax, bill.total, input.paymentMethod, approvedBy],
+      [input.customerId || null, user.id, bill.subtotal, bill.discount, bill.tax, bill.total, pay.primary, approvedBy],
     );
     const saleId = saleRes.rows[0].id;
     const invoiceNo = `INV-${saleRes.rows[0].created_at.toISOString().slice(0, 10).replace(/-/g, '')}-${String(saleId).padStart(5, '0')}`;
     await client.query('UPDATE sales SET invoice_no = $1 WHERE id = $2', [invoiceNo, saleId]);
     // Credit (udhaar) sale: the whole bill goes on the customer's ledger, inside this same transaction (limit is checked under a row lock).
-    if (input.paymentMethod === 'credit') await credit.recordCreditSale(client, { customerId: input.customerId, saleId, amount: bill.total, userId: user.id });
+    for (const l of pay.lines) await client.query('INSERT INTO sale_payments (sale_id, method, amount) VALUES ($1,$2,$3)', [saleId, l.method, l.paise / 100]);
+    if (creditLine) await credit.recordCreditSale(client, { customerId: input.customerId, saleId, amount: creditLine.paise / 100, userId: user.id });
 
     const meta = new Map(lines.map((l) => [l.productId, l]));
     for (const line of bill.items) {
@@ -166,6 +214,7 @@ async function createSale(user, input, idempotencyKey) {
       );
     }
     await client.query('UPDATE sale_requests SET sale_id = $1 WHERE idempotency_key = $2', [saleId, idempotencyKey]);
+    if (held) await client.query(`UPDATE held_bills SET status = 'completed', completed_sale_id = $2, completed_at = now(), version = version + 1 WHERE id = $1`, [held.id, saleId]);
     return { saleId, replayed: false };
   });
 
@@ -196,10 +245,13 @@ async function getSale(id, user) {
   const s = res.rows[0];
   if (!s || (user && user.role === 'cashier' && s.employee_id !== user.id)) throw notFound('Sale not found.');
   const items = await query(
-    `SELECT si.product_id, p.name, p.sku, si.quantity, si.unit, si.unit_price, si.total, si.tax_rate, si.price_includes_tax, si.tax_amount, si.taxable_value, si.discount_share
+    `SELECT si.id, si.product_id, p.name, p.sku, si.quantity, si.returned_qty, si.unit, si.unit_price, si.total, si.tax_rate, si.price_includes_tax, si.tax_amount, si.taxable_value, si.discount_share
        FROM sale_items si JOIN products p ON p.id = si.product_id WHERE si.sale_id = $1 ORDER BY si.id`,
     [id],
   );
+  const payRows = (await query('SELECT method, amount FROM sale_payments WHERE sale_id = $1 ORDER BY id', [id])).rows;
+  const payments = payRows.length ? payRows.map((r) => ({ method: r.method, amount: r.amount })) : s.total > 0 ? [{ method: s.payment_method, amount: s.total }] : [];
+  const returns = await require('./returns').loadReturns(query, id);
   const alert =
     user && user.role === 'cashier'
       ? null
@@ -218,8 +270,13 @@ async function getSale(id, user) {
     paymentMethod: s.payment_method,
     status: s.status,
     refundAmount: s.refund_amount,
+    payments,
+    returns,
     discountApprovedBy: s.approved_by_name || null,
     items: items.rows.map((i) => ({
+      id: i.id,
+      returnedQty: i.returned_qty,
+      returnableQty: Math.round((i.quantity - i.returned_qty) * 1000) / 1000,
       productId: i.product_id,
       name: i.name,
       sku: i.sku,
@@ -257,7 +314,7 @@ async function listSales(user, f) {
   else if (f.employeeId) where.push(`s.employee_id = ${p(f.employeeId)}`);
   if (f.from) where.push(`(s.created_at AT TIME ZONE ${p(tz)})::date >= ${p(f.from)}::date`);
   if (f.to) where.push(`(s.created_at AT TIME ZONE ${p(tz)})::date <= ${p(f.to)}::date`);
-  if (f.payment) where.push(`s.payment_method = ${p(f.payment)}`);
+  if (f.payment) where.push(f.payment === 'split' ? `s.payment_method = 'split'` : `EXISTS (SELECT 1 FROM sale_payments sp WHERE sp.sale_id = s.id AND sp.method = ${p(f.payment)})`);
   if (f.status) where.push(`s.status = ${p(f.status)}`);
   if (f.q) where.push(`(s.invoice_no ILIKE ${p(`%${f.q}%`)} OR c.name ILIKE ${p(`%${f.q}%`)} OR s.id::text = ${p(f.q)})`);
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -296,31 +353,10 @@ async function listSales(user, f) {
   return { total, page: f.page, limit: f.limit, rows };
 }
 
-/** Full refund: marks the sale refunded and puts stock back. */
+/** Full refund (owner/manager): a return of every unit still on the bill. Implemented by the return engine (services/returns.js). */
 async function refundSale(id, user) {
-  await withTransaction(async (client) => {
-    const res = await client.query('SELECT id, status, total, payment_method, customer_id FROM sales WHERE id = $1 FOR UPDATE', [id]);
-    const s = res.rows[0];
-    if (!s) throw notFound('Sale not found.');
-    if (s.status !== 'completed') throw conflict(`This sale is already ${s.status}.`);
-    await client.query(`UPDATE sales SET status = 'refunded', refund_amount = total, refunded_at = now(), refunded_by = $2 WHERE id = $1`, [id, user.id]);
-    if (s.payment_method === 'credit') await credit.reverseCreditSale(client, { customerId: s.customer_id, saleId: id, amount: s.total, userId: user.id });
-    const items = await client.query('SELECT product_id, quantity FROM sale_items WHERE sale_id = $1', [id]);
-    for (const it of items.rows) {
-      await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2', [it.quantity, it.product_id]);
-      await client.query(
-        `INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type) VALUES ($1,'refund',$2,$3,'refund')`,
-        [it.product_id, it.quantity, id],
-      );
-    }
-  });
-  invalidateAll();
-  try {
-    await evaluateSales(query, { saleIds: [id] });
-  } catch (err) {
-    console.error('[risk] scoring failed after refund', err.message);
-  }
+  await require('./returns').refundFull(id, user);
   return getSale(id, user);
 }
 
-module.exports = { previewBill, createSale, getSale, listSales, refundSale, discountLimits };
+module.exports = { resolvePayments, previewBill, createSale, getSale, listSales, refundSale, discountLimits, loadProductsForCart, mergeItems };

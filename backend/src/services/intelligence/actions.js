@@ -78,7 +78,7 @@ async function operationsActions() {
   const today = await todayLocal();
   const yesterday = addDays(today, -1);
   const y = (await query(
-    `SELECT COUNT(*) FILTER (WHERE s.payment_method = 'cash')::int AS cash_sales,
+    `SELECT COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM sale_payments sp WHERE sp.sale_id = s.id AND sp.method = 'cash'))::int AS cash_sales,
             EXISTS (SELECT 1 FROM cash_reconciliations r WHERE r.business_date = $2::date AND r.shift_id IS NULL) AS reconciled
        FROM sales s WHERE s.status IN ('completed','refunded') AND (s.created_at AT TIME ZONE $1)::date = $2::date`, [tz, yesterday])).rows[0];
   if (y.cash_sales > 0 && !y.reconciled) out.push(make({ id: `recon:${yesterday}`, type: 'unreconciled_day', category: 'operations', severity: 'medium', title: `Yesterday's cash (${yesterday}) was never counted`, detail: 'Count the drawer and record it so any shortage is caught while it can still be traced.', why: [`${y.cash_sales} cash sales yesterday and no cash reconciliation recorded.`], route: '/closing', cta: 'Reconcile cash' }));

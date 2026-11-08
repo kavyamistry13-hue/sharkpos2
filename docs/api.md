@@ -90,3 +90,23 @@ Roles: **A** admin, **M** manager, **C** cashier.
 
 | GET | /demo/status | |
 | POST | /demo/load | A, `{confirm:true}`; disabled in production unless `ALLOW_DEMO=true` |
+
+
+## Sprint 6–7 additions (hold bill, split payment, partial returns, Owner Today)
+
+All money-moving calls need an `Idempotency-Key: <uuid>` header (400 `IDEMPOTENCY_KEY_REQUIRED` without it). Same key + same body replays the original result (HTTP 200, `Idempotent-Replayed: true`); same key + different body is 422 `IDEMPOTENCY_KEY_REUSED`.
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| POST | /sales | O,M,C | Now accepts `payments: [{method, amount}]` (split, max 4, each method once) **or** `paymentMethod` (not both); optional `heldBillId`. Lines must add up to the bill exactly: 400 `PAYMENT_SHORT` / `PAYMENT_EXCEEDS_BILL` / `DUPLICATE_PAYMENT_METHOD` / `PAYMENT_PRECISION`. Response adds `payments[]`. A split sale has `paymentMethod: "split"`. |
+| GET | /sales?payment= | O,M,C | `split` or any tender method (matches any tender line). |
+| GET | /sales/:id | O,M,C | Adds `payments[]`, `returns[]`, and per line `id`, `returnedQty`, `returnableQty`. |
+| POST | /sales/:id/returns | O,M,C* | Body `{items:[{saleItemId, quantity, restock?}], reason, note?, refunds?:[{method, amount}]}`. Needs key. 409 `RETURN_EXCEEDS_SOLD`, `SALE_NOT_RETURNABLE`; 400 `REFUND_METHOD_EXCEEDS_PAID`, `REFUND_SPLIT_MISMATCH`, `LINE_NOT_IN_SALE`. *Cashier: own bills only, within 24 h (else 403). |
+| POST | /sales/:id/refund | O,M | Unchanged: returns everything still on the bill (now also a return record). |
+| GET | /held-bills?status= | O,M,C | Cashier sees own only. |
+| POST | /held-bills | O,M,C | `{items, discount?, customerId?, label?}`; optional key; max 20 open per user (409 `HOLD_LIMIT`). |
+| GET / PUT | /held-bills/:id | O,M,C | GET re-validates the cart (`issues[]`: PRODUCT_UNAVAILABLE, EXPIRED, INSUFFICIENT_STOCK, PRICE_CHANGED) and prices it. PUT edits the cart, optional `version` (409 `HOLD_VERSION_CONFLICT`). |
+| POST | /held-bills/:id/resume | O,M,C | Counts the resume (audited), returns the re-validated cart. Hold stays `held`. |
+| POST | /held-bills/:id/discard | O,M,C | Idempotent. 409 if already completed. |
+| POST | /held-bills/:id/complete | O,M,C | Sells the server-side cart via the normal sale path. Needs key. 409 `HELD_BILL_NOT_OPEN` if it was already completed/discarded. |
+| GET | /intelligence/owner-today | O,M | Owner Today: `business`, `needsAttention`, `forecast`, `recommendations` (the Action Center list), `health`, `value`, `kinds`. Read-only. |

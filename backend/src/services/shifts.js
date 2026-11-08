@@ -5,7 +5,7 @@ const { r2 } = require('../utils/dates');
 const { activity } = require('./dailyOps');
 
 const isManager = (u) => u.role === 'business_owner' || u.role === 'manager';
-const windowPreds = { salesW: 's.employee_id = $1 AND s.created_at >= $2 AND s.created_at < $3', refundW: 's.refunded_by = $1 AND COALESCE(s.refunded_at, s.updated_at) >= $2 AND COALESCE(s.refunded_at, s.updated_at) < $3', payW: 'l.created_by = $1 AND l.created_at >= $2 AND l.created_at < $3' };
+const windowPreds = { salesW: 's.employee_id = $1 AND s.created_at >= $2 AND s.created_at < $3', refundW: 'r.processed_by = $1 AND r.created_at >= $2 AND r.created_at < $3', payW: 'l.created_by = $1 AND l.created_at >= $2 AND l.created_at < $3' };
 
 /** Live numbers for a shift: what this cashier rang up, refunded and collected between opening and now (or closing). */
 async function shiftSummary(q, shift, until = new Date()) {

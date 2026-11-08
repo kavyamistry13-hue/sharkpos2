@@ -29,8 +29,9 @@ export function InvoiceModal({ sale, onClose, footerExtra }) {
             {sale.discount > 0 && <div className="flex justify-between"><dt className="text-muted">Discount{sale.discountApprovedBy ? ` (approved by ${sale.discountApprovedBy})` : ''}</dt><dd>−{inr(sale.discount, 2)}</dd></div>}
             <div className="flex justify-between"><dt className="text-muted">{sale.taxIncluded > 0 && sale.tax - sale.taxIncluded < 0.005 ? 'Tax (included in prices)' : 'Tax'}</dt><dd>{inr(sale.tax, 2)}</dd></div>
             <div className="flex justify-between border-t border-line pt-1.5 text-base font-extrabold"><dt>Total</dt><dd>{inr(sale.total, 2)}</dd></div>
-            <div className="flex justify-between"><dt className="text-muted">Paid by</dt><dd>{sale.paymentMethod === 'credit' ? 'UDHAAR (credit)' : sale.paymentMethod.toUpperCase()}</dd></div>
+            <div className="flex justify-between"><dt className="text-muted">Paid by</dt><dd>{sale.payments && sale.payments.length > 1 ? sale.payments.map((p) => `${p.method === 'credit' ? 'UDHAAR' : p.method.toUpperCase()} ${inr(p.amount, 2)}`).join(' + ') : sale.paymentMethod === 'credit' ? 'UDHAAR (credit)' : sale.paymentMethod.toUpperCase()}</dd></div>
           </dl>
+          {sale.status === 'completed' && sale.refundAmount > 0 && <div className="mt-3 text-center"><Badge tone="warn">Partly returned · {inr(sale.refundAmount, 2)}</Badge></div>}
           {sale.status !== 'completed' && <div className="mt-3 text-center"><Badge tone="warn">{cap(sale.status)}{sale.status === 'refunded' ? ` · ${inr(sale.refundAmount, 2)}` : ''}</Badge></div>}
           <p className="mt-4 text-center text-xs text-muted">{s ? s.invoiceFooter : ''}</p>
         </div>

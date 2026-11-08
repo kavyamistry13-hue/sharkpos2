@@ -16,7 +16,7 @@ const PAY = [
   { value: 'credit', label: 'Udhaar', icon: Wallet },
 ];
 
-function CustomerPicker({ customer, onChange }) {
+export function CustomerPicker({ customer, onChange }) {
   const toast = useToast();
   const [q, setQ] = useState('');
   const dq = useDebounced(q, 200);

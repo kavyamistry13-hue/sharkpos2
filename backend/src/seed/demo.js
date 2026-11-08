@@ -393,7 +393,7 @@ const totalRaw = PRODUCTS.reduce((a, p) => a + p.perDay, 0);
   log('Writing to the database…');
   await withSystemTransaction(async (client) => {
     // Remove this business's previous demo rows (row-level security limits every DELETE to this business).
-    for (const t of ['value_ledger', 'action_outcomes', 'action_decisions', 'recommendation_log', 'anomaly_alerts', 'restock_orders', 'goods_receipt_items', 'goods_receipts', 'supplier_price_history', 'purchase_order_items', 'purchase_orders', 'supplier_products', 'product_cost_history', 'inventory_movements', 'cash_reconciliations', 'shifts', 'credit_ledger', 'sale_items', 'sales', 'customers', 'products', 'suppliers', 'categories', 'settings']) {
+    for (const t of ['value_ledger', 'action_outcomes', 'action_decisions', 'recommendation_log', 'anomaly_alerts', 'restock_orders', 'goods_receipt_items', 'goods_receipts', 'supplier_price_history', 'purchase_order_items', 'purchase_orders', 'supplier_products', 'product_cost_history', 'inventory_movements', 'cash_reconciliations', 'shifts', 'credit_ledger', 'held_bills', 'sale_return_refunds', 'sale_return_items', 'sale_returns', 'sale_payments', 'sale_items', 'sales', 'customers', 'products', 'suppliers', 'categories', 'settings']) {
       await client.query(`DELETE FROM ${t}`);
     }
     // Demo staff: keep existing accounts (audit history references them) and refresh their details.
@@ -452,12 +452,17 @@ const totalRaw = PRODUCTS.reduce((a, p) => a + p.perDay, 0);
       );
     }
     await client.query(`UPDATE sales SET refunded_at = created_at WHERE status = 'refunded' AND refunded_at IS NULL`);   // demo refunds happen on the day of sale
+    // Tender lines and (header-only) return records for the demo sales, so every report reads the same tables as for real data.
+    await client.query(`INSERT INTO sale_payments (sale_id, method, amount, created_at) SELECT id, payment_method, total, created_at FROM sales WHERE total > 0`);
+    await client.query(`INSERT INTO sale_returns (sale_id, total_refund, taxable_value, tax_amount, reason, completes_sale, is_legacy, created_at) SELECT id, refund_amount, refund_amount - tax, tax, 'other', TRUE, TRUE, refunded_at FROM sales WHERE status = 'refunded' AND refund_amount > 0`);
+    await client.query(`INSERT INTO sale_return_refunds (return_id, method, amount) SELECT r.id, s.payment_method, r.total_refund FROM sale_returns r JOIN sales s ON s.id = r.sale_id WHERE r.is_legacy`);
     const costOf = new Map(products.map((p) => [p.id, p.purchase]));   // demo cost is constant, so the snapshot equals the product cost
     const items = [];
     orders.forEach((o) => o.bill.items.forEach((it) => items.push([o.id + offSale, it.productId + offProd, it.quantity, it.unitPrice, it.lineTotal, costOf.get(it.productId), it.taxRate, it.discountShare, it.taxableValue, it.tax])));
     for (const part of chunk(items, 8000)) {
       await client.query(`INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, total, unit_cost, tax_rate, discount_share, taxable_value, tax_amount) SELECT * FROM unnest($1::int[], $2::int[], $3::numeric[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[], $8::numeric[], $9::numeric[], $10::numeric[])`, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((k) => part.map((r) => r[k])));
     }
+    await client.query(`UPDATE sale_items si SET returned_qty = si.quantity FROM sales s WHERE s.id = si.sale_id AND s.status = 'refunded'`);
     for (const part of chunk(movements, 8000)) {
       await client.query(
         `INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, created_at)
