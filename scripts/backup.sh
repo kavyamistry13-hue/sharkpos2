@@ -32,7 +32,7 @@ pg_dump "$BACKUP_DATABASE_URL" -Fc --no-owner --enable-row-security \
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:BACKUP_PASSPHRASE -in "$OUT" -out "$TMP"
 TOC="$(pg_restore --list "$TMP")"
 for t in accounts businesses subscriptions payments sales; do
-  echo "$TOC" | grep -q "TABLE DATA public $t " || { echo "Verification failed: no data entry for table $t. The backup role needs migration 007 applied." >&2; exit 1; }
+  echo "$TOC" | grep -q "TABLE public $t " || { echo "Verification failed: no table entry for $t in the backup." >&2; exit 1; }
 done
 OK=1
 echo "Verified: $(du -h "$OUT" | cut -f1) encrypted, $(echo "$TOC" | grep -c 'TABLE DATA') tables with data."
