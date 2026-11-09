@@ -15,7 +15,7 @@ const sql = (s, text, params) => env.db.runAsTenant(s.businessId, async () => (a
 const get = async (s, path, who = 'owner') => { const r = await as(s, who).get(path); assert.equal(r.status, 200, `${path}: ${JSON.stringify(r.body)}`); return r.body; };
 const code = (r) => r.body && r.body.details && r.body.details.code;
 async function taxed(s, rate = 5) { return (await as(s).post('/categories', { name: uniq('Tax '), taxRate: rate })).body; }
-const backdateSale = (s, saleId, days) => sql(s, `UPDATE sales SET created_at = created_at - ($2::int * interval '1 day') WHERE id = $1`, [saleId, days]);
+const backdateSale = (s, saleId, days) => require('./helpers').backdateSaleFixture(s.businessId, saleId, `${days} days`);
 const backdateProduct = (s, id, days) => sql(s, `UPDATE products SET created_at = now() - ($2::int * interval '1 day') WHERE id = $1`, [id, days]);
 /** Test-only: the table owner (never the app role) moves a decision back in time so the measurement windows can be exercised. */
 async function ownerSql(table, text, params) {

@@ -50,7 +50,22 @@ function client(base) {
   };
 }
 
+/** TEST FIXTURE ONLY: rewrites a finished sale's date (to build history). Migration 014 freezes sales money/date fields
+ *  against the app role, so fixtures go through the OWNER role with that one trigger switched off inside a single transaction. */
+async function backdateSaleFixture(businessId, saleId, interval) {
+  const c = new Client({ connectionString: testOwnerUrl });
+  await c.connect();
+  try {
+    await c.query('BEGIN');
+    await c.query('SELECT set_config($1, $2, true)', ['app.business_id', String(businessId)]);
+    await c.query('ALTER TABLE sales DISABLE TRIGGER trg_sales_money_frozen');
+    await c.query('UPDATE sales SET created_at = created_at - $2::interval WHERE id = $1', [saleId, interval]);
+    await c.query('ALTER TABLE sales ENABLE TRIGGER trg_sales_money_frozen');
+    await c.query('COMMIT');
+  } catch (e) { await c.query('ROLLBACK'); throw e; } finally { await c.end(); }
+}
+
 let n = 0;
 const uniq = (s) => `${s}${Date.now().toString(36)}${(n += 1)}`;
 
-module.exports = { boot, client, uniq };
+module.exports = { boot, client, uniq, backdateSaleFixture };

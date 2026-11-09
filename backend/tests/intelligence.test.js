@@ -15,7 +15,7 @@ const as = (s, who = 'owner') => api(s[who].token);
 const sql = (s, text, params) => env.db.runAsTenant(s.businessId, async () => (await env.db.query(text, params)).rows);
 const get = async (s, path, who = 'owner') => { const r = await as(s, who).get(path); assert.equal(r.status, 200, `${path}: ${JSON.stringify(r.body)}`); return r.body; };
 async function taxed(s, rate = 5, name = uniq('Tax ')) { return (await as(s).post('/categories', { name, taxRate: rate })).body; }
-const backdateSale = (s, saleId, days) => sql(s, `UPDATE sales SET created_at = created_at - ($2::int * interval '1 day') WHERE id = $1`, [saleId, days]);
+const backdateSale = (s, saleId, days) => require('./helpers').backdateSaleFixture(s.businessId, saleId, `${days} days`);
 const backdateProduct = (s, id, days) => sql(s, `UPDATE products SET created_at = now() - ($2::int * interval '1 day') WHERE id = $1`, [id, days]);
 
 const ENDPOINTS = ['/intelligence/actions', '/intelligence/today', '/intelligence/inventory-cash', '/intelligence/dead-stock', '/intelligence/profit-leaks', '/intelligence/suppliers'];

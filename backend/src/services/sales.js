@@ -12,6 +12,7 @@ const { assertQuantity, round3 } = require('../utils/units');
 
 const { getSettings } = require('./settings');
 const credit = require('./credit');
+const approvalGuard = require('./approvalGuard');
 
 // Highest discount (% of subtotal) each role may give without anyone else's approval.
 // The cashier limit is editable in Settings; manager/admin limits are fixed.
@@ -62,6 +63,8 @@ async function previewBill({ items, discount }) {
   return computeBill(lines, discount || null);
 }
 
+const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 12);
+
 async function resolveDiscountAuthority(client, user, bill, approval) {
   if (bill.discount <= 0) return { approvedBy: null };
   const LIMITS = await discountLimits();
@@ -75,13 +78,21 @@ async function resolveDiscountAuthority(client, user, bill, approval) {
     err.details = { code: 'APPROVAL_REQUIRED', discountPct: bill.discountPct, limit: ownLimit };
     throw err;
   }
+  approvalGuard.assertRequesterAllowed(user.id);
   const res = await client.query(
     `SELECT id, password_hash, role, is_active FROM users WHERE lower(email) = lower($1)`,
     [approval.email],
   );
   const approver = res.rows[0];
-  const ok = approver && approver.is_active && (await bcrypt.compare(approval.password, approver.password_hash));
-  if (!ok) throw forbidden('Approval failed: invalid approver credentials.');
+  const locked = approver ? await approvalGuard.accountLocked(approver.id) : false;
+  // Always run bcrypt (against a dummy hash if the approver is unknown) so timing does not reveal which emails exist.
+  const matches = await bcrypt.compare(approval.password, approver ? approver.password_hash : DUMMY_HASH);
+  const ok = !!approver && approver.is_active && !locked && matches;
+  if (!ok) {
+    await approvalGuard.recordFailure(user.id, approver && !locked ? approver.id : null, approver ? 'bad_credentials' : 'unknown_account', null);
+    throw forbidden('Approval failed: invalid approver credentials.');
+  }
+  approvalGuard.recordSuccess(user.id);
   if (approver.role === 'cashier' || bill.discountPct > (LIMITS[approver.role] ?? 0)) {
     throw forbidden(`This approver cannot authorise a ${bill.discountPct}% discount.`);
   }

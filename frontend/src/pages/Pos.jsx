@@ -8,6 +8,7 @@ import { Badge, Button, Card, EmptyState, Field, Input, Modal, PageHeader, Selec
 import { InvoiceModal } from '../components/Invoice';
 import { inr } from '../utils/format';
 import { uuid } from '../utils/uuid';
+import { cleanCode, looksLikeBarcode, lookupBarcode } from '../services/barcode';
 
 const PAY = [
   { value: 'cash', label: 'Cash', icon: Banknote },
@@ -142,7 +143,21 @@ export default function Pos() {
   };
   const commitQty = (id, text) => { const v = parseFloat(text); if (!(v > 0)) setQty(id, 0); else setQty(id, v); };
 
+  // A USB/Bluetooth scanner "types" the manufacturer barcode and presses Enter: look it up as a barcode (this shop's mapping), add it to the
+  // SAME cart. The camera scanner lives on the Counter screen. Typed names / SKUs keep the normal search below.
+  const scanCode = async (raw) => {
+    try {
+      const code = cleanCode(raw);
+      const r = code ? await lookupBarcode(code) : { found: false };
+      if (!r.found) { toast.error(r.canRegister ? `Barcode ${raw} is not registered. Open the Counter to register it.` : `Barcode ${raw} is not registered. Ask a manager to register it.`); return; }
+      const p = r.product;
+      if (p.expired) toast.error(`${p.name} is expired and cannot be sold.`);
+      else if (p.stock <= 0) toast.error(`${p.name} is out of stock.`);
+      else addToCart(p);
+    } catch (e) { toast.error(e.message); }
+  };
   const onSearchKey = (e) => {
+    if (e.key === 'Enter' && looksLikeBarcode(q)) { scanCode(q.trim()); setQ(''); return; }
     if (e.key === 'Enter' && products.data && products.data.rows.length) {
       const exact = products.data.rows.find((p) => p.sku.toLowerCase() === q.trim().toLowerCase()) || products.data.rows[0];
       addToCart(exact);

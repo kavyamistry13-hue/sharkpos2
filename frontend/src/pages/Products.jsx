@@ -1,16 +1,15 @@
 import { useState } from 'react';
-import { Pencil, Plus, Search, Trash2, Package } from 'lucide-react';
+import { Pencil, Plus, Search, Trash2, Package, Star, Barcode } from 'lucide-react';
 import { api } from '../services/api';
 import { useAsync, useDebounced } from '../hooks/useAsync';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
 import { Async, Badge, Button, Card, ConfirmDialog, DataTable, EmptyState, Field, Input, Modal, PageHeader, Pagination, Select } from '../components/ui';
 import { inr, dateOnly } from '../utils/format';
+import { UNITS, DECIMAL_UNITS } from '../utils/units';
 
 const STATUS = { in_stock: ['ok', 'In stock'], low_stock: ['warn', 'Low stock'], out_of_stock: ['bad', 'Out of stock'], expired: ['bad', 'Expired'] };
-const UNITS = [['pcs', 'Piece (pcs)'], ['kg', 'Kilogram (kg)'], ['g', 'Gram (g)'], ['l', 'Litre (l)'], ['ml', 'Millilitre (ml)'], ['m', 'Metre (m)'], ['pack', 'Pack'], ['box', 'Box'], ['dozen', 'Dozen']];
-const DECIMAL_UNITS = ['kg', 'g', 'l', 'ml', 'm'];
-const EMPTY = { name: '', sku: '', categoryId: '', unit: 'pcs', priceIncludesTax: true, purchasePrice: '', sellingPrice: '', stock: '0', minimumStock: '0', supplierId: '', leadTimeDays: '3', expiryDate: '' };
+const EMPTY = { barcode: '', name: '', sku: '', categoryId: '', unit: 'pcs', priceIncludesTax: true, purchasePrice: '', sellingPrice: '', stock: '0', minimumStock: '0', supplierId: '', leadTimeDays: '3', expiryDate: '' };
 
 function ProductForm({ product, lookups, onClose, onSaved }) {
   const toast = useToast();
@@ -37,6 +36,7 @@ function ProductForm({ product, lookups, onClose, onSaved }) {
     const body = {
       name: f.name.trim(), sku: f.sku.trim() || undefined, categoryId: Number(f.categoryId), unit: f.unit, priceIncludesTax: f.priceIncludesTax, purchasePrice: Number(f.purchasePrice), sellingPrice: Number(f.sellingPrice),
       stock: parseFloat(f.stock || 0), minimumStock: parseFloat(f.minimumStock || 0), supplierId: f.supplierId ? Number(f.supplierId) : null, leadTimeDays: Number(f.leadTimeDays || 0), expiryDate: f.expiryDate || null,
+      ...(!product && f.barcode.trim() ? { barcode: f.barcode.trim() } : {}),
     };
     try {
       if (product) await api.put(`/products/${product.id}`, body); else await api.post('/products', body);
@@ -56,6 +56,7 @@ function ProductForm({ product, lookups, onClose, onSaved }) {
       <form id="product-form" onSubmit={submit} className="grid gap-4 sm:grid-cols-2" noValidate>
         <Field label="Product name" error={errs.name} className="sm:col-span-2"><Input value={f.name} onChange={set('name')} /></Field>
         <Field label="SKU" hint="Leave empty to generate one."><Input value={f.sku} onChange={set('sku')} /></Field>
+        {!product && <Field label="Barcode (optional)" hint="The number printed under the barcode on the packet — no label printing needed."><Input inputMode="numeric" autoComplete="off" aria-label="Barcode" value={f.barcode} onChange={set('barcode')} /></Field>}
         <Field label="Category" error={errs.categoryId}><Select value={f.categoryId} onChange={set('categoryId')}><option value="">Choose…</option>{lookups.categories.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.taxRate}% tax)</option>)}</Select></Field>
         <Field label="Sold by (unit)" hint="Kg, g, l, ml and m allow fractions such as 0.75."><Select value={f.unit} onChange={set('unit')}>{UNITS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></Field>
         <Field label={`Selling price (₹ per ${f.unit}, ${f.priceIncludesTax ? 'incl. tax' : 'before tax'})`} error={errs.sellingPrice}><Input inputMode="decimal" value={f.sellingPrice} onChange={set('sellingPrice')} /></Field>
@@ -67,7 +68,55 @@ function ProductForm({ product, lookups, onClose, onSaved }) {
         <Field label="Supplier lead time (days)"><Input inputMode="numeric" value={f.leadTimeDays} onChange={set('leadTimeDays')} /></Field>
         <Field label="Expiry date" hint="Only for perishable items."><Input type="date" value={f.expiryDate} onChange={set('expiryDate')} /></Field>
       </form>
+      {product && <BarcodeManager product={product} />}
     </Modal>
+  );
+}
+
+/** Owner/manager: see, add, replace, make primary and remove the manufacturer barcodes of a product. The server refuses duplicates inside the shop. */
+function BarcodeManager({ product }) {
+  const toast = useToast();
+  const [rows, setRows] = useState(product.barcodes || []);
+  const [add, setAdd] = useState('');
+  const [edit, setEdit] = useState(null);       // { id, value }
+  const [confirm, setConfirm] = useState(null); // id awaiting a second tap
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const reload = async () => setRows((await api.get(`/products/${product.id}/barcodes`)).rows);
+  const run = async (fn, ok) => { setBusy(true); setErr(''); try { await fn(); await reload(); if (ok) toast.success(ok); } catch (e) { setErr(e.message); } finally { setBusy(false); } };
+  return (
+    <section className="mt-6 border-t border-line pt-4" aria-label="Barcodes">
+      <h3 className="mb-1 flex items-center gap-2 text-base font-bold"><Barcode className="size-5" aria-hidden="true" />Barcodes</h3>
+      <p className="mb-3 text-xs text-muted">Scanning any of these adds this product. Use the number already printed on the packet. A product can have more than one.</p>
+      <ul className="divide-y divide-line-soft" data-testid="barcode-list">
+        {rows.length === 0 && <li className="py-2 text-sm text-muted">No barcode yet.</li>}
+        {rows.map((b) => (
+          <li key={b.id} className="flex items-center gap-2 py-2">
+            {edit && edit.id === b.id ? (
+              <>
+                <Input aria-label="New barcode value" className="num flex-1" value={edit.value} onChange={(e) => setEdit({ ...edit, value: e.target.value })} />
+                <Button size="sm" loading={busy} onClick={() => run(async () => { await api.put(`/products/${product.id}/barcodes/${b.id}`, { barcode: edit.value }); setEdit(null); }, 'Barcode replaced.')}>Save</Button>
+                <Button size="sm" variant="secondary" onClick={() => { setEdit(null); setErr(''); }}>Cancel</Button>
+              </>
+            ) : (
+              <>
+                <span className="num flex-1 break-all font-semibold">{b.barcode}</span>
+                {b.isPrimary ? <Badge tone="info">Main</Badge> : <button className="text-xs font-semibold text-brand" disabled={busy} onClick={() => run(() => api.put(`/products/${product.id}/barcodes/${b.id}`, { isPrimary: true }), 'Main barcode changed.')}><Star className="mr-1 inline size-3.5" aria-hidden="true" />Make main</button>}
+                <Button size="sm" variant="secondary" onClick={() => { setEdit({ id: b.id, value: b.barcode }); setErr(''); }}>Replace</Button>
+                {confirm === b.id
+                  ? <Button size="sm" variant="danger" loading={busy} onClick={() => run(async () => { await api.del(`/products/${product.id}/barcodes/${b.id}`); setConfirm(null); }, 'Barcode removed.')}>Sure?</Button>
+                  : <Button size="sm" variant="secondary" aria-label={`Remove barcode ${b.barcode}`} onClick={() => setConfirm(b.id)}><Trash2 className="size-4" /></Button>}
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+      <form className="mt-3 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (add.trim()) run(async () => { await api.post(`/products/${product.id}/barcodes`, { barcode: add.trim() }); setAdd(''); }, 'Barcode added.'); }}>
+        <Input aria-label="Add another barcode" inputMode="numeric" autoComplete="off" className="num flex-1" placeholder="Type or scan a barcode to add" value={add} onChange={(e) => setAdd(e.target.value)} />
+        <Button type="submit" variant="secondary" loading={busy} disabled={!add.trim()}>Add barcode</Button>
+      </form>
+      {err && <p role="alert" className="mt-2 rounded-lg bg-bad-soft px-3 py-2 text-sm font-semibold text-bad">{err}</p>}
+    </section>
   );
 }
 
@@ -94,7 +143,7 @@ export default function Products() {
   };
 
   const columns = [
-    { key: 'name', header: 'Product', render: (p) => <div><p className="font-semibold">{p.name}</p><p className="text-xs text-muted num">{p.sku} · {p.category}</p></div> },
+    { key: 'name', header: 'Product', render: (p) => <div><p className="font-semibold">{p.name}</p><p className="text-xs text-muted num">{p.sku} · {p.category}</p>{p.barcodes && p.barcodes.length > 0 && <p className="text-xs text-muted num" data-testid="row-barcodes">Barcode: {p.barcodes.map((b) => b.barcode).join(' · ')}</p>}</div> },
     { key: 'price', header: 'Price', align: 'right', render: (p) => <div><p>{inr(p.sellingPrice, 2)}</p><p className="text-xs text-muted">{p.priceIncludesTax ? 'incl. tax · ' : ''}cost {inr(p.purchasePrice, 2)}</p></div> },
     { key: 'stock', header: 'Stock', align: 'right', render: (p) => <div><p className="font-semibold">{p.stock}{p.unit && p.unit !== 'pcs' ? ` ${p.unit}` : ''}</p><p className="text-xs text-muted">min {p.minimumStock}</p></div> },
     { key: 'supplier', header: 'Supplier', render: (p) => <div><p>{p.supplier || '—'}</p><p className="text-xs text-muted">{p.leadTimeDays}-day lead time</p></div> },

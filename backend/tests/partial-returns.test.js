@@ -213,7 +213,7 @@ test('partial return: roles — cashier only on their own recent bills; manager/
   const owners = (await as(s).post('/sales', { items: [{ productId: s.p.id, quantity: 4 }], paymentMethod: 'cash' })).body;
   assert.equal((await ret(s, mine, [{ saleItemId: lineOf(mine, s.p).id, quantity: 1 }], {}, 'cashier')).status, 201);
   assert.equal((await ret(s, owners, [{ saleItemId: lineOf(owners, s.p).id, quantity: 1 }], {}, 'cashier')).status, 404, "a cashier cannot see or return someone else's bill");
-  await sql(s, `UPDATE sales SET created_at = now() - interval '30 hours' WHERE id = $1`, [mine.id]);
+  await require('./helpers').backdateSaleFixture(s.businessId, mine.id, '30 hours');   // sale was just created, so 'now - 30h' == created_at - 30h
   const old = await ret(s, mine, [{ saleItemId: lineOf(mine, s.p).id, quantity: 1 }], {}, 'cashier');
   assert.equal(old.status, 403);
   assert.equal((await ret(s, mine, [{ saleItemId: lineOf(mine, s.p).id, quantity: 1 }], {}, 'manager')).status, 201);

@@ -28,12 +28,16 @@ echo "Backing up \"$DB_NAME\" → $NAME"
 pg_dump "$BACKUP_DATABASE_URL" -Fc --no-owner --enable-row-security \
   | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:BACKUP_PASSPHRASE -out "$OUT"
 
-# Verify: the file must decrypt and contain a table of contents with data entries for the key tables.
+# Verify: decrypt the dump and require every live public table to be present.
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:BACKUP_PASSPHRASE -in "$OUT" -out "$TMP"
 TOC="$(pg_restore --list "$TMP")"
-for t in accounts businesses subscriptions payments sales; do
-  grep -Fq "TABLE public $t " <<< "$TOC" || { echo "Verification failed: no table entry for $t in the backup." >&2; exit 1; }
-done
+
+TABLES="$(psql "$BACKUP_DATABASE_URL" -Atc "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")"
+while IFS= read -r t; do
+  [ -n "$t" ] || continue
+  grep -Fq "TABLE DATA public $t " <<< "$TOC" || { echo "Verification failed: no table entry for $t in the backup." >&2; exit 1; }
+done <<< "$TABLES"
+
 OK=1
 echo "Verified: $(du -h "$OUT" | cut -f1) encrypted, $(echo "$TOC" | grep -c 'TABLE DATA') tables with data."
 

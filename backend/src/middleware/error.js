@@ -11,6 +11,10 @@ function errorHandler(err, req, res, _next) {
   if (err.type === 'entity.parse.failed') {
     return res.status(400).json({ error: 'Malformed JSON in request body.' });
   }
+  // Body larger than the JSON limit: a client error, not a server fault.
+  if (err.type === 'entity.too.large' || err.status === 413) {
+    return res.status(413).json({ error: 'The request is too large.' });
+  }
   // Postgres: unique violation / FK violation / check violation
   if (err.code === '23505') {
     return res.status(409).json({ error: 'A record with this value already exists.' });
@@ -28,6 +32,6 @@ function errorHandler(err, req, res, _next) {
   return res.status(500).json({ error: 'Something went wrong on our side. Please try again.', requestId: req.id });
 }
 
-const notFoundHandler = (req, res) => res.status(404).json({ error: `Route not found: ${req.method} ${req.originalUrl}` });
+const notFoundHandler = (req, res) => res.status(404).json({ error: 'Route not found.' });
 
 module.exports = { errorHandler, notFoundHandler };

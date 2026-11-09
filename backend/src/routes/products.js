@@ -13,6 +13,7 @@ const optId = z.coerce.number().int().positive().optional();
 
 const base = z.object({
   sku: z.string().trim().min(1).max(40).optional(),
+  barcode: z.string().trim().min(1).max(64).optional(),   // optional manufacturer barcode, saved with the product
   name: z.string().trim().min(1).max(160),
   categoryId: id,
   purchasePrice: z.coerce.number().min(0).max(1e6),
@@ -27,7 +28,7 @@ const base = z.object({
 });
 
 // A partial update must not re-apply the create-time defaults (Zod 4 would otherwise reset stock, unit, etc. when they are omitted).
-const update = z.object(Object.fromEntries(Object.entries(base.shape).map(([k, v]) => [k, v instanceof z.ZodDefault ? v.def.innerType : v]))).partial();
+const update = z.object(Object.fromEntries(Object.entries(base.shape).filter(([k]) => k !== 'barcode').map(([k, v]) => [k, v instanceof z.ZodDefault ? v.def.innerType : v]))).partial();
 
 router.get('/lookups', asyncH(async (_req, res) => res.json(await svc.getLookups())));
 

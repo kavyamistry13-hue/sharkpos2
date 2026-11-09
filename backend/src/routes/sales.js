@@ -15,7 +15,7 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 const cart = {
   items: z.array(z.object({ productId: id, quantity: quantitySchema })).min(1, 'Add at least one product.').max(100),
-  discount: z.object({ type: z.enum(['amount', 'percent']), value: z.coerce.number().min(0).max(1e7) }).nullable().optional(),
+  discount: z.object({ type: z.enum(['amount', 'percent']), value: z.coerce.number().min(0).max(1e7) }).refine((d) => d.type !== 'percent' || d.value <= 100, { message: 'A percentage discount cannot be more than 100.', path: ['value'] }).nullable().optional(),
 };
 
 router.post('/preview', validate({ body: z.object(cart) }), asyncH(async (req, res) => res.json(await svc.previewBill(req.body))));

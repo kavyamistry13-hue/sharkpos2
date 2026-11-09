@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, Minus, PauseCircle, Plus, Printer, RotateCcw, Search, ShoppingCart, Trash2, X, XCircle } from 'lucide-react';
+import { CheckCircle2, Minus, PauseCircle, Plus, Printer, RotateCcw, ScanLine, Search, ShoppingCart, Trash2, X, XCircle } from 'lucide-react';
 import { api } from '../services/api';
 import { useAsync, useDebounced } from '../hooks/useAsync';
 import { useAuth } from '../hooks/useAuth';
 import { Badge, Button, Card, EmptyState, Input, Modal, Select, Spinner, cx } from '../components/ui';
 import { InvoiceModal } from '../components/Invoice';
+import BarcodeScanner from '../components/BarcodeScanner';
+import BarcodeRegister from '../components/BarcodeRegister';
+import { cleanCode, feedback, looksLikeBarcode, lookupBarcode } from '../services/barcode';
 import { CustomerPicker } from './Pos';
 import { inr, dateTime } from '../utils/format';
 import { uuid } from '../utils/uuid';
@@ -171,8 +174,13 @@ export default function Counter() {
   const [receipt, setReceipt] = useState(null);
   const [last, setLast] = useState(null);
   const heldCount = useAsync(() => api.get('/held-bills'), [showHeld, msg]);
+  const [scanning, setScanning] = useState(false);          // camera overlay open
+  const [unknown, setUnknown] = useState(null);             // { code, canRegister } — a barcode this shop has not registered yet
+  const [notice, setNotice] = useState(null);               // result pushed into the open scanner (e.g. after registering)
+  const cartRef = useRef([]);
 
   useEffect(() => { searchRef.current && searchRef.current.focus(); }, []);
+  cartRef.current = cart;
   const items = useMemo(() => cart.map((c) => ({ productId: c.id, quantity: c.qty })), [cart]);
   const itemsKey = JSON.stringify(items);
 
@@ -190,10 +198,68 @@ export default function Counter() {
     return [...c, { id: p.id, name: p.name, price: p.price, stock: p.stock, qty: 1, unit: p.unit || 'pcs' }];
   }), []);
   const step = (id, d) => setCart((c) => c.flatMap((x) => (x.id !== id ? [x] : (x.qty + d <= 0 ? [] : [{ ...x, qty: Math.min(Math.round((x.qty + d) * 1000) / 1000, x.stock) }]))));
-  // The barcode scanner types the code and presses Enter: an exact SKU match is added at once, otherwise the first match.
+  // A scanned product goes into the SAME cart the grid uses (same-barcode scans raise the quantity of ONE line). Price, tax and stock are the
+  // server's: /sales/preview prices the bill and /sales checks stock again. Out-of-stock / expired products are shown but never added.
+  const addScanned = (p) => {
+    const cur = cartRef.current; const ex = cur.find((x) => x.id === p.id); const have = ex ? ex.qty : 0;
+    const base = { name: p.name, price: p.price };
+    if (p.expired) return { kind: 'error', title: 'Expired — cannot be sold', ...base };
+    if (p.stock <= 0) return { kind: 'warn', title: 'Out of stock (0 left)', ...base };
+    if (have + 1 > p.stock) return { kind: 'warn', title: `Only ${p.stock} in stock — all already on the bill`, ...base, qty: have };
+    const next = ex ? cur.map((x) => (x.id === p.id ? { ...x, qty: Math.round((x.qty + 1) * 1000) / 1000, stock: p.stock, price: p.price } : x))
+      : [...cur, { id: p.id, name: p.name, price: p.price, stock: p.stock, qty: 1, unit: p.unit || 'pcs' }];
+    cartRef.current = next; setCart(next);
+    return { kind: 'ok', title: have ? '✓ Added again' : '✓ Product added', ...base, qty: have + 1 };
+  };
+  /** One scanned/typed barcode, from the camera, a USB/Bluetooth scanner or manual entry → a Result the scanner/banner can show. */
+  const handleCode = async (raw) => {
+    const code = cleanCode(raw);
+    if (!code) return { kind: 'error', title: 'That is not a readable barcode. Try again.' };
+    const r = await lookupBarcode(code);
+    if (r.found) return addScanned(r.product);
+    setUnknown({ code, canRegister: !!r.canRegister });
+    return { kind: 'warn', title: 'Barcode not registered', name: code };
+  };
+  const scanFromKeyboard = async (raw) => {
+    try {
+      const r = await handleCode(raw);
+      feedback(r.kind === 'ok' ? 'ok' : r.kind === 'warn' ? 'warn' : 'error');
+      if (r.kind !== 'warn' || !unknownPending.current) setMsg({ type: r.kind === 'ok' ? 'ok' : 'err', text: `${r.title}${r.name ? ` — ${r.name}` : ''}${r.qty ? ` · Qty ${r.qty}` : ''}` });
+    } catch (e) { setMsg({ type: 'err', text: e.message }); }
+  };
+  const unknownPending = useRef(null); unknownPending.current = unknown;
+  const registered = (scan) => {                           // the barcode was just linked → add that product and carry on scanning
+    setUnknown(null);
+    const r = scan.found ? addScanned(scan.product) : { kind: 'error', title: 'Saved, but could not be added. Scan it again.' };
+    setNotice({ ...r, at: Date.now() });
+    if (!scanning) setMsg({ type: r.kind === 'ok' ? 'ok' : 'err', text: `${r.title}${r.name ? ` — ${r.name}` : ''}` });
+  };
+  // USB / Bluetooth scanners type the digits quickly and press Enter. In the search box that is handled below; this also catches a scan when
+  // focus is elsewhere (after tapping a button). Human typing is slower than 60 ms per key, so it never triggers this.
+  const wedge = useRef({ buf: '', last: 0 });
+  useEffect(() => {
+    const onWin = (e) => {
+      const t = e.target; const tag = t && t.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable) || e.ctrlKey || e.metaKey || e.altKey) return;
+      const w = wedge.current; const now = Date.now();
+      if (now - w.last > 60) w.buf = '';
+      w.last = now;
+      if (e.key === 'Enter') { const b = w.buf; w.buf = ''; if (b.length >= 6 && /^[A-Za-z0-9._/+-]+$/.test(b)) { e.preventDefault(); scanFromKeyboard(b); } return; }
+      if (e.key.length === 1) w.buf += e.key;
+    };
+    window.addEventListener('keydown', onWin);
+    return () => window.removeEventListener('keydown', onWin);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Enter in the search box: a number that looks like a barcode is looked up as a barcode (a scanner "types" it); anything else keeps the
+  // normal behaviour (exact SKU, otherwise the first match), so keyboard search is unchanged.
   const onKey = (e) => {
-    if (e.key !== 'Enter' || !products.data || !products.data.rows.length) return;
-    add(products.data.rows.find((p) => p.sku.toLowerCase() === q.trim().toLowerCase()) || products.data.rows[0]);
+    if (e.key !== 'Enter') return;
+    const text = q.trim();
+    if (!text) return;
+    if (looksLikeBarcode(text)) { setQ(''); scanFromKeyboard(text); return; }
+    if (!products.data || !products.data.rows.length) return;
+    add(products.data.rows.find((p) => p.sku.toLowerCase() === text.toLowerCase()) || products.data.rows[0]);
     setQ('');
   };
   const clear = () => { setCart([]); setCustomer(null); setHeld(null); setBill(null); searchRef.current && searchRef.current.focus(); };
@@ -261,10 +327,13 @@ export default function Counter() {
       <Banner msg={msg} onClose={() => setMsg(null)} />
       <div className="grid gap-4 lg:grid-cols-[1fr_420px]">
         <div>
-          <div className="relative mb-3">
-            <Search className="pointer-events-none absolute left-4 top-1/2 size-6 -translate-y-1/2 text-muted" aria-hidden="true" />
-            <input ref={searchRef} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={onKey} aria-label="Scan barcode or search product" placeholder="Scan barcode or type a product — Enter adds it"
-              className="h-14 w-full rounded-xl border border-line bg-white pl-12 pr-4 text-lg focus:border-brand" />
+          <div className="mb-3 flex gap-2">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-4 top-1/2 size-6 -translate-y-1/2 text-muted" aria-hidden="true" />
+              <input ref={searchRef} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={onKey} aria-label="Scan barcode or search product" placeholder="Scan barcode or type a product — Enter adds it"
+                className="h-14 w-full rounded-xl border border-line bg-white pl-12 pr-4 text-lg focus:border-brand" />
+            </div>
+            <Button size="lg" className="!h-14 shrink-0 px-5 text-lg" onClick={() => { setNotice(null); setScanning(true); }} data-testid="open-scanner"><ScanLine className="size-6" aria-hidden="true" />Scan</Button>
           </div>
           {products.loading && !products.data ? <Spinner className="mx-auto my-10 size-7" /> : !products.data || products.data.rows.length === 0 ? <Card><EmptyState icon={Search} title="No product found" hint="Check the spelling or the code." /></Card> : (
             <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
@@ -304,6 +373,8 @@ export default function Counter() {
       <HeldModal open={showHeld} onClose={() => setShowHeld(false)} onResume={resume} busy={resuming} />
       <ReturnModal open={showReturn} onClose={() => setShowReturn(false)} onDone={(r) => setMsg({ type: 'ok', text: `Return recorded: ${inr(r.total, 2)} to give back.` })} />
       <InvoiceModal sale={receipt} onClose={() => setReceipt(null)} />
+      <BarcodeScanner open={scanning} paused={!!unknown} notice={notice} onCode={handleCode} onClose={() => { setScanning(false); searchRef.current && searchRef.current.focus(); }} summary={{ count, total: bill ? bill.total : cart.reduce((t, c) => t + c.price * c.qty, 0) }} />
+      <BarcodeRegister code={unknown && unknown.code} canRegister={!!(unknown && unknown.canRegister)} onClose={() => setUnknown(null)} onDone={registered} />
     </div>
   );
 }

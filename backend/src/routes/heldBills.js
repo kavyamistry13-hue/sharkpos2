@@ -14,7 +14,7 @@ const router = express.Router();
 const id = z.coerce.number().int().positive();
 const cartBody = {
   items: z.array(z.object({ productId: id, quantity: quantitySchema })).min(1, 'Add at least one product.').max(100),
-  discount: z.object({ type: z.enum(['amount', 'percent']), value: z.coerce.number().min(0).max(1e7) }).nullable().optional(),
+  discount: z.object({ type: z.enum(['amount', 'percent']), value: z.coerce.number().min(0).max(1e7) }).refine((d) => d.type !== 'percent' || d.value <= 100, { message: 'A percentage discount cannot be more than 100.', path: ['value'] }).nullable().optional(),
   customerId: id.nullable().optional(),
   label: z.string().trim().max(60).nullable().optional(),
 };

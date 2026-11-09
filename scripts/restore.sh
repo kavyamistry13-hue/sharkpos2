@@ -25,8 +25,9 @@ openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:BACKUP_PASSPHRASE -in
 # Tenant tables use FORCED row-level security: the owner role sees 0 rows in them. Count with the backup role (BYPASSRLS) via VERIFY_DATABASE_URL.
 VERIFY="${VERIFY_DATABASE_URL:-$TARGET_DATABASE_URL}"
 echo "Row counts in the restored database:"
-for t in businesses accounts memberships subscriptions payments products sales audit_logs; do
-  printf '  %-15s %s\n' "$t" "$(psql "$VERIFY" -Atc "SELECT count(*) FROM $t")"
+for t in $(psql "$VERIFY" -Atc "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1"); do
+  printf '  %-26s %s\n' "$t" "$(psql "$VERIFY" -Atc "SELECT count(*) FROM $t")"
 done
 [ -z "${VERIFY_DATABASE_URL:-}" ] && echo "  (tenant tables such as products/sales show 0 for the owner role by design — set VERIFY_DATABASE_URL to the sharkpos2_backup URL to see real counts.)"
+echo "To prove the copy matches its source: SOURCE_DATABASE_URL=<backup-role url> RESTORED_DATABASE_URL=<backup-role url of restored db> node scripts/verify-restore.js"
 echo "Restore complete. Next: run 'npm run migrate -- --status' against it and point a staging copy of the API at it before going live."

@@ -5,6 +5,7 @@ const { invalidateAll } = require('../utils/cache');
 const { assertWithinLimit } = require('./billing/subscription');
 const { currentBusinessId } = require('../db');
 const { assertQuantity, isDecimalUnit } = require('../utils/units');
+const barcodes = require('./barcodes');
 
 const SORTS = {
   name: (a, b) => a.name.localeCompare(b.name),
@@ -22,7 +23,9 @@ async function listProducts(f) {
   let rows = await getProductStats();
   if (f.q) {
     const q = f.q.toLowerCase();
-    rows = rows.filter((p) => p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || p.category.toLowerCase().includes(q));
+    // a typed/scanned barcode finds its product too (substring, so a partial code works)
+    const byCode = new Set((await query('SELECT DISTINCT product_id FROM product_barcodes WHERE barcode ILIKE $1', [`%${f.q.replace(/[\\%_]/g, '\\$&')}%`])).rows.map((r) => r.product_id));
+    rows = rows.filter((p) => p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || p.category.toLowerCase().includes(q) || byCode.has(p.id));
   }
   if (f.categoryId) rows = rows.filter((p) => p.categoryId === f.categoryId);
   if (f.supplierId) rows = rows.filter((p) => p.supplierId === f.supplierId);
@@ -30,7 +33,9 @@ async function listProducts(f) {
   const sorted = [...rows].sort(SORTS[f.sort] || SORTS.name);
   if (f.dir === 'desc') sorted.reverse();
   const total = sorted.length;
-  const page = sorted.slice((f.page - 1) * f.limit, f.page * f.limit).map((p) => ({ ...p, status: statusLabel(p) }));
+  const slice = sorted.slice((f.page - 1) * f.limit, f.page * f.limit);
+  const codes = await barcodes.mapForProducts(slice.map((p) => p.id));
+  const page = slice.map((p) => ({ ...p, status: statusLabel(p), barcodes: codes.get(p.id) || [] }));
   return { total, page: f.page, limit: f.limit, rows: page };
 }
 
@@ -49,7 +54,7 @@ async function getProduct(id) {
   const all = await getProductStats();
   const p = all.find((x) => x.id === id);
   if (!p) throw notFound('Product not found.');
-  return { ...p, status: statusLabel(p) };
+  return { ...p, status: statusLabel(p), barcodes: (await barcodes.mapForProducts([id])).get(id) || [] };
 }
 
 async function createProduct(input, userId) {
@@ -68,10 +73,31 @@ async function createProduct(input, userId) {
     if (input.stock > 0) {
       await client.query(`INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type) VALUES ($1,'initial',$2,$3,NULL)`, [res.rows[0].id, input.stock, userId]);
     }
+    // optional manufacturer barcode, saved atomically with the product (a duplicate rolls the whole creation back)
+    if (input.barcode) await barcodes.insertBarcode(client, res.rows[0].id, input.barcode, userId, { primary: true });
     return res.rows[0].id;
   });
   invalidateAll();
   return getProduct(id);
+}
+
+/**
+ * First-time registration of a manufacturer barcode from the Counter: a product with only what the cashier knows (name, price, unit, stock),
+ * plus its barcode, in ONE transaction. Category defaults to "General" (or the shop's first category); cost stays 0 until the owner fills it in.
+ */
+async function quickCreate(input, userId) {
+  let categoryId = input.categoryId;
+  if (!categoryId) {
+    const c = (await query(`SELECT id FROM categories ORDER BY (lower(name) = 'general') DESC, name LIMIT 1`)).rows[0];
+    if (!c) throw badRequest('Add a category first (Products → Categories), then register this barcode.');
+    categoryId = c.id;
+  }
+  const p = await createProduct({
+    name: input.name, categoryId, purchasePrice: input.purchasePrice ?? 0, sellingPrice: input.sellingPrice, stock: input.stock ?? 0, minimumStock: 0,
+    unit: input.unit || 'pcs', priceIncludesTax: input.priceIncludesTax ?? true, leadTimeDays: 3, barcode: input.barcode,
+  }, userId);
+  const hit = await barcodes.lookup(input.barcode);
+  return { product: p, scan: hit };
 }
 
 async function updateProduct(id, input, userId) {
@@ -113,6 +139,7 @@ async function updateProduct(id, input, userId) {
 async function deleteProduct(id) {
   const res = await query('UPDATE products SET is_active = FALSE WHERE id = $1 AND is_active = TRUE RETURNING id', [id]);
   if (!res.rowCount) throw notFound('Product not found.');
+  await query('DELETE FROM product_barcodes WHERE product_id = $1', [id]);   // the archived product must not keep a barcode a live product may need
   invalidateAll();
 }
 
@@ -120,9 +147,11 @@ async function deleteProduct(id) {
 async function searchForPos(q, limit = 24) {
   const all = await getProductStats();
   const needle = (q || '').toLowerCase().trim();
+  let byCode = new Set();
+  if (needle.length >= 4) byCode = new Set((await query('SELECT product_id FROM product_barcodes WHERE barcode = ANY($1::text[])', [barcodes.equivalents((q || '').trim())])).rows.map((r) => r.product_id));
   const rows = all
     .filter((p) => !p.outOfStock && p.expiryStatus !== 'expired')
-    .filter((p) => !needle || p.name.toLowerCase().includes(needle) || p.sku.toLowerCase() === needle || p.sku.toLowerCase().includes(needle) || p.category.toLowerCase().includes(needle))
+    .filter((p) => !needle || byCode.has(p.id) || p.name.toLowerCase().includes(needle) || p.sku.toLowerCase() === needle || p.sku.toLowerCase().includes(needle) || p.category.toLowerCase().includes(needle))
     .sort((a, b) => b.avgDailySales - a.avgDailySales)
     .slice(0, limit);
   return rows.map((p) => ({ id: p.id, name: p.name, sku: p.sku, category: p.category, price: p.sellingPrice, stock: p.stock, taxRate: p.taxRate, unit: p.unit, allowDecimal: isDecimalUnit(p.unit), priceIncludesTax: p.priceIncludesTax }));
@@ -151,4 +180,5 @@ async function getProductSuppliers(productId) {
   return res.rows.map((r) => ({ supplierId: r.supplier_id, supplier: r.supplier, isActive: r.is_active, supplierSku: r.supplier_sku, packSize: r.pack_size, minOrderQty: r.min_order_qty, leadTimeDays: r.lead_time_days, lastCost: r.last_cost, isPreferred: r.is_preferred }));
 }
 
-module.exports = { getCostHistory, getProductSuppliers, listProducts, getLookups, getProduct, createProduct, updateProduct, deleteProduct, searchForPos, statusLabel };
+module.exports = {
+  quickCreate, getCostHistory, getProductSuppliers, listProducts, getLookups, getProduct, createProduct, updateProduct, deleteProduct, searchForPos, statusLabel };
