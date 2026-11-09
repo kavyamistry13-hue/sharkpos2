@@ -16,8 +16,7 @@ import { inr } from '../utils/format';
 // `hint` and `doneLabel` re-word it. The camera stays on while the parent shows its form (`paused`), so it never restarts between products.
 
 const NATIVE_FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf'];
-const SAME_CODE_IN_VIEW_MS = 700;      // a barcode still being seen this recently is the same sighting
-const SAME_CODE_MAX_HOLD_MS = 4000;    // …but held up this long it counts again
+const SAME_CODE_RELEASE_MS = 1200;     // a barcode stays LOCKED until it has been out of view this long (or a different code is scanned); holding it up never re-counts
 const CONFIRM_WINDOW_MS = 1200;        // non-GTIN symbologies need two identical reads inside this window
 
 const CAMERA_HELP = {
@@ -62,15 +61,18 @@ export default function BarcodeScanner({ open, onClose, onCode, paused = false, 
 
   /** One decoded value from either detector. Filters misreads, repeats of the same sighting, and single-frame noise. */
   const accept = useCallback((raw) => {
-    if (pausedRef.current) return;
     const code = cleanCode(raw);
     if (!code) return;
+    if (pausedRef.current) {                                       // a form/sheet is open: ignore the read, but a locked code still in view stays locked
+      if (code === seen.current.code) seen.current.lastSeen = Date.now();
+      return;
+    }
     if (isGtinLength(code) && !gs1Valid(code)) return;           // check digit wrong → a misread, ignore silently
     const now = Date.now(); const s = seen.current;
     if (code === s.code) {
-      const inView = now - s.lastSeen < SAME_CODE_IN_VIEW_MS;
+      const inView = now - s.lastSeen < SAME_CODE_RELEASE_MS;
       s.lastSeen = now;
-      if (inView && now - s.acceptedAt < SAME_CODE_MAX_HOLD_MS) return;   // same barcode still in front of the lens: not a new scan
+      if (inView) return;                                          // same barcode still in front of the lens: locked, not a new scan
     }
     if (!isGtinLength(code)) {
       const p = pending.current;

@@ -37,7 +37,7 @@ Errors: 400 `BAD_BARCODE`, 409 `BARCODE_TAKEN` (names the owning product). Audit
 
 ## Scanner library
 Native `BarcodeDetector` where the browser has it (Chrome on Android: fast, good in low light); otherwise `@zxing/browser` 0.2.1 (MIT) + `@zxing/library` 0.23.0 (Apache-2.0), lazy-loaded as a separate ~120 kB gzip chunk (Counter itself stays ~13 kB gzip). Pure JS, no WASM, so no CSP relaxation; free, no service. Also works inside a future Capacitor/Android WebView (needs the CAMERA permission in the manifest).
-Reliability: invalid check digits are dropped; the same code held in view counts once (re-count after ~4 s hold or after leaving the view); non-GTIN codes need two matching reads; lookups are queued so a slow network cannot reorder scans. Hosting header changed to `Permissions-Policy: camera=(self)`. Camera needs HTTPS (or localhost).
+Reliability: invalid check digits are dropped; a code held in view counts once and stays locked until it leaves view (~1.2 s) or a different code is scanned; non-GTIN codes need two matching reads; lookups are queued so a slow network cannot reorder scans. Hosting header changed to `Permissions-Policy: camera=(self)`. Camera needs HTTPS (or localhost).
 
 ## Multi-tenant and security
 Every barcode query runs inside the caller's tenant with forced RLS; another shop's mapping is invisible, so a foreign product can never be returned or linked. Management routes are owner/manager only; input is validated (regex + length) and queries are parameterised; changes are audited. No Security-phase protection was changed.
