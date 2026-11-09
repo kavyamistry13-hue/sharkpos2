@@ -6,6 +6,7 @@ const { assertWithinLimit } = require('./billing/subscription');
 const { currentBusinessId } = require('../db');
 const { assertQuantity, isDecimalUnit } = require('../utils/units');
 const barcodes = require('./barcodes');
+const crypto = require('crypto');
 
 const SORTS = {
   name: (a, b) => a.name.localeCompare(b.name),
@@ -60,7 +61,7 @@ async function getProduct(id) {
 async function createProduct(input, userId) {
   await assertWithinLimit(currentBusinessId(), 'products');
   const id = await withTransaction(async (client) => {
-    const sku = input.sku || `SKU-${Date.now().toString(36).toUpperCase()}`;
+    const sku = input.sku || `SKU-${crypto.randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
     const unit = input.unit || 'pcs';
     assertQuantity(unit, input.stock, 'Stock', input.name);
     assertQuantity(unit, input.minimumStock, 'Minimum stock', input.name);
@@ -135,6 +136,23 @@ async function updateProduct(id, input, userId) {
   return getProduct(id);
 }
 
+/**
+ * Adds received/found stock to a product ATOMICALLY (stock = stock + qty under a row lock), so a sale happening at the same moment is never
+ * overwritten the way "set stock to X" could. Recorded as a normal 'adjustment' movement, exactly like a manual stock edit.
+ */
+async function addStock(id, qty, userId) {
+  const out = await withTransaction(async (client) => {
+    const cur = (await client.query('SELECT name, unit, stock FROM products WHERE id = $1 AND is_active = TRUE FOR UPDATE', [id])).rows[0];
+    if (!cur) throw notFound('Product not found.');
+    assertQuantity(cur.unit, qty, 'Quantity', cur.name);
+    const after = (await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2 RETURNING stock', [qty, id])).rows[0].stock;
+    await client.query(`INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id) VALUES ($1,'adjustment',$2,$3)`, [id, qty, userId]);
+    return { name: cur.name, unit: cur.unit, before: Number(cur.stock), after: Number(after) };
+  });
+  invalidateAll();
+  return out;
+}
+
 /** Soft delete: sold products must stay referenced by historical sale_items. */
 async function deleteProduct(id) {
   const res = await query('UPDATE products SET is_active = FALSE WHERE id = $1 AND is_active = TRUE RETURNING id', [id]);
@@ -181,4 +199,4 @@ async function getProductSuppliers(productId) {
 }
 
 module.exports = {
-  quickCreate, getCostHistory, getProductSuppliers, listProducts, getLookups, getProduct, createProduct, updateProduct, deleteProduct, searchForPos, statusLabel };
+  quickCreate, addStock, getCostHistory, getProductSuppliers, listProducts, getLookups, getProduct, createProduct, updateProduct, deleteProduct, searchForPos, statusLabel };

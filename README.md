@@ -78,6 +78,6 @@ database/  migrations/ (001–008), migrate.js, seed.js, create-platform-admin.j
 scripts/   backup.sh, restore.sh, backup-prune.js
 ops/       keepalive/ (optional Cloudflare cron Worker)
 .github/   workflows: ci.yml (test + approved deploy), backup.yml, restore-drill.yml
-docs/      architecture.md, PHASE_8_BARCODE.md, SECURITY.md, DATA_PROTECTION_CHECKLIST.md, SECURITY_AUDIT_REPORT.md, phase1-3 reports, phase3-deployment.md
+docs/      architecture.md, PHASE_8_BARCODE.md, PHASE_8_1_SCAN_ADD.md, SECURITY.md, DATA_PROTECTION_CHECKLIST.md, SECURITY_AUDIT_REPORT.md, phase1-3 reports, phase3-deployment.md
 ```
 See [docs/architecture.md](docs/architecture.md) and [docs/phase1-report.md](docs/phase1-report.md).

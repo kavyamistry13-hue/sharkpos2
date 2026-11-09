@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Pencil, Plus, Search, Trash2, Package, Star, Barcode } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Pencil, Plus, Search, Trash2, Package, Star, Barcode, ScanLine } from 'lucide-react';
 import { api } from '../services/api';
 import { useAsync, useDebounced } from '../hooks/useAsync';
 import { useToast } from '../hooks/useToast';
@@ -11,7 +12,7 @@ import { UNITS, DECIMAL_UNITS } from '../utils/units';
 const STATUS = { in_stock: ['ok', 'In stock'], low_stock: ['warn', 'Low stock'], out_of_stock: ['bad', 'Out of stock'], expired: ['bad', 'Expired'] };
 const EMPTY = { barcode: '', name: '', sku: '', categoryId: '', unit: 'pcs', priceIncludesTax: true, purchasePrice: '', sellingPrice: '', stock: '0', minimumStock: '0', supplierId: '', leadTimeDays: '3', expiryDate: '' };
 
-function ProductForm({ product, lookups, onClose, onSaved }) {
+export function ProductForm({ product, lookups, onClose, onSaved }) {
   const toast = useToast();
   const [f, setF] = useState(product ? {
     name: product.name, sku: product.sku, categoryId: String(product.categoryId), unit: product.unit || 'pcs', priceIncludesTax: Boolean(product.priceIncludesTax), purchasePrice: String(product.purchasePrice), sellingPrice: String(product.sellingPrice),
@@ -158,7 +159,7 @@ export default function Products() {
 
   return (
     <div className="mx-auto max-w-[1280px]">
-      <PageHeader title="Products" subtitle="Add, edit and organise everything you sell." actions={<Button onClick={() => setEditing('new')} disabled={!lookups.data}><Plus className="size-4" aria-hidden="true" />Add product</Button>} />
+      <PageHeader title="Products" subtitle="Add, edit and organise everything you sell." actions={<div className="flex flex-wrap gap-2"><Button onClick={() => setEditing('new')} disabled={!lookups.data}><Plus className="size-4" aria-hidden="true" />Add product</Button><Link to="/products/scan-add" data-testid="scan-add-link" className="inline-flex h-10 items-center gap-2 rounded-lg border border-brand bg-white px-4 text-sm font-semibold text-brand hover:bg-brand-soft"><ScanLine className="size-4" aria-hidden="true" />Scan &amp; Add Products</Link></div>} />
       <Card>
         <div className="grid gap-3 border-b border-line p-4 sm:grid-cols-2 lg:grid-cols-[1.5fr_1fr_1fr_1fr_auto]">
           <div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted" aria-hidden="true" /><Input className="pl-9" aria-label="Search products" placeholder="Search name, SKU or category" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} /></div>

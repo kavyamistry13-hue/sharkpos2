@@ -12,6 +12,7 @@ const Contact = lazy(() => import('./pages/public/Contact'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Pos = lazy(() => import('./pages/Pos'));
 const Products = lazy(() => import('./pages/Products'));
+const ScanAddProducts = lazy(() => import('./pages/ScanAddProducts'));
 const Inventory = lazy(() => import('./pages/Inventory'));
 const Purchasing = lazy(() => import('./pages/Purchasing'));
 const Sales = lazy(() => import('./pages/Sales'));
@@ -69,6 +70,7 @@ export default function App() {
         <Route path="/dashboard" element={<Guard roles={mgr}><Dashboard /></Guard>} />
         <Route path="/pos" element={<Pos />} />
         <Route path="/products" element={<Guard roles={mgr}><Products /></Guard>} />
+        <Route path="/products/scan-add" element={<Guard roles={mgr}><ScanAddProducts /></Guard>} />
         <Route path="/inventory" element={<Guard roles={mgr}><Inventory /></Guard>} />
         <Route path="/purchasing" element={<Guard roles={mgr}><Purchasing /></Guard>} />
         <Route path="/sales" element={<Sales />} />

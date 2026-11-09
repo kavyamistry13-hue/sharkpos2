@@ -108,6 +108,25 @@ async function assertFree(client, code, exceptBarcodeId = null) {
   if (hit) throw conflict(`This barcode already belongs to "${hit.name}".`, { code: 'BARCODE_TAKEN', productId: hit.product_id, productName: hit.name, barcodeId: hit.id });
 }
 
+/**
+ * Two requests can pass assertFree() at the same moment (e.g. two phones scanning the same new product). The database's UNIQUE constraint is the
+ * real referee: the loser's write fails with 23505. Inside a transaction that would poison it and surface as a nameless 409, so the write runs
+ * under a SAVEPOINT; on a unique violation we roll back to it and re-check, which now sees the winner and throws the same BARCODE_TAKEN answer
+ * (naming the product that owns the code) as the non-racing case. Nothing else is swallowed.
+ */
+async function guarded(client, code, write, exceptBarcodeId = null) {
+  await client.query('SAVEPOINT barcode_write');
+  try {
+    const out = await write();
+    await client.query('RELEASE SAVEPOINT barcode_write');
+    return out;
+  } catch (e) {
+    await client.query('ROLLBACK TO SAVEPOINT barcode_write');
+    if (e && e.code === '23505') { await assertFree(client, code, exceptBarcodeId); }
+    throw e;
+  }
+}
+
 /** Inserts a barcode for an existing product inside the caller's transaction. The first barcode of a product becomes primary. */
 async function insertBarcode(client, productId, raw, userId, { primary } = {}) {
   const code = cleanBarcode(raw);
@@ -115,10 +134,10 @@ async function insertBarcode(client, productId, raw, userId, { primary } = {}) {
   const has = (await client.query('SELECT 1 FROM product_barcodes WHERE product_id = $1 LIMIT 1', [productId])).rowCount > 0;
   const makePrimary = primary === true || !has;
   if (makePrimary && has) await client.query('UPDATE product_barcodes SET is_primary = FALSE WHERE product_id = $1 AND is_primary', [productId]);
-  const res = await client.query(
+  const res = await guarded(client, code, () => client.query(
     `INSERT INTO product_barcodes (product_id, barcode, barcode_type, is_primary, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id, barcode, barcode_type, is_primary`,
     [productId, code, typeOf(code), makePrimary, userId || null],
-  );
+  ));
   const r = res.rows[0];
   return { id: r.id, barcode: r.barcode, type: r.barcode_type, isPrimary: r.is_primary };
 }
@@ -150,10 +169,10 @@ async function updateBarcode(productId, barcodeId, { barcode, isPrimary }, userI
       if (value !== cur.barcode) await assertFree(client, value, barcodeId);
     }
     if (isPrimary === true && !cur.is_primary) await client.query('UPDATE product_barcodes SET is_primary = FALSE WHERE product_id = $1 AND is_primary', [productId]);
-    const res = await client.query(
+    const res = await guarded(client, value, () => client.query(
       `UPDATE product_barcodes SET barcode = $2, barcode_type = $3, is_primary = $4 WHERE id = $1 RETURNING id, barcode, barcode_type, is_primary`,
       [barcodeId, value, typeOf(value), isPrimary === true ? true : cur.is_primary],
-    );
+    ), barcodeId);
     const r = res.rows[0];
     return { product: p, before: cur.barcode, barcode: { id: r.id, barcode: r.barcode, type: r.barcode_type, isPrimary: r.is_primary } };
   });

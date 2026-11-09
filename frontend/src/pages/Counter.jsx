@@ -6,6 +6,7 @@ import { useAuth } from '../hooks/useAuth';
 import { Badge, Button, Card, EmptyState, Input, Modal, Select, Spinner, cx } from '../components/ui';
 import { InvoiceModal } from '../components/Invoice';
 import BarcodeScanner from '../components/BarcodeScanner';
+import { useWedgeScanner } from '../hooks/useWedgeScanner';
 import BarcodeRegister from '../components/BarcodeRegister';
 import { cleanCode, feedback, looksLikeBarcode, lookupBarcode } from '../services/barcode';
 import { CustomerPicker } from './Pos';
@@ -234,23 +235,9 @@ export default function Counter() {
     setNotice({ ...r, at: Date.now() });
     if (!scanning) setMsg({ type: r.kind === 'ok' ? 'ok' : 'err', text: `${r.title}${r.name ? ` — ${r.name}` : ''}` });
   };
-  // USB / Bluetooth scanners type the digits quickly and press Enter. In the search box that is handled below; this also catches a scan when
-  // focus is elsewhere (after tapping a button). Human typing is slower than 60 ms per key, so it never triggers this.
-  const wedge = useRef({ buf: '', last: 0 });
-  useEffect(() => {
-    const onWin = (e) => {
-      const t = e.target; const tag = t && t.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable) || e.ctrlKey || e.metaKey || e.altKey) return;
-      const w = wedge.current; const now = Date.now();
-      if (now - w.last > 60) w.buf = '';
-      w.last = now;
-      if (e.key === 'Enter') { const b = w.buf; w.buf = ''; if (b.length >= 6 && /^[A-Za-z0-9._/+-]+$/.test(b)) { e.preventDefault(); scanFromKeyboard(b); } return; }
-      if (e.key.length === 1) w.buf += e.key;
-    };
-    window.addEventListener('keydown', onWin);
-    return () => window.removeEventListener('keydown', onWin);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // USB / Bluetooth scanners type the digits quickly and press Enter. In the search box that is handled below; the shared hook also catches a
+  // scan when focus is elsewhere (after tapping a button).
+  useWedgeScanner(scanFromKeyboard);
   // Enter in the search box: a number that looks like a barcode is looked up as a barcode (a scanner "types" it); anything else keeps the
   // normal behaviour (exact SKU, otherwise the first match), so keyboard search is unchanged.
   const onKey = (e) => {
