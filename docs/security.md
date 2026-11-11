@@ -22,6 +22,7 @@
 | Subscription gate | expired/cancelled businesses get HTTP 402 on every write (data kept, read-only); plan features/limits enforced in the backend |
 
 | Production start-up | refuses to boot on weak JWT secret, non-https/localhost CORS, localhost DB, mock payments |
+| Phase 9 inventory | `stock_batches`, `stock_counts`, `stock_count_items`: forced RLS (`tenant_isolation` + `backup_read`), composite FKs; stock changes only via sale / PO-receive / shared adjustment code; CSV export uses column allow-lists (no auth/secret fields) and formula-injection protection; CSV import is owner/manager only and all-or-nothing |
 | Backups | encrypted (AES-256), read-only backup role, verified after creation, restore tested in CI weekly |
 | Logging | structured, no secrets/bodies/queries; auth and payment failures are separate events |
 

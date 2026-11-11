@@ -10,7 +10,7 @@ test.after(async () => { await env.close(); });
 // Pre-existing platform/identity/billing tables (migrations 001–008, untouched by Sprint 1–2). They carry a business_id but are accessed
 // through the system (sysQuery) role by design; they are listed explicitly so any NEW table that forgets RLS fails this test.
 const PLATFORM_TABLES = ['payments', 'billing_events', 'subscriptions', 'memberships', 'sessions'];
-const NEW_TABLES = ['product_cost_history', 'supplier_products', 'purchase_orders', 'purchase_order_items', 'goods_receipts', 'goods_receipt_items', 'supplier_price_history'];
+const NEW_TABLES = ['product_cost_history', 'supplier_products', 'purchase_orders', 'purchase_order_items', 'goods_receipts', 'goods_receipt_items', 'supplier_price_history', 'product_barcodes', 'stock_batches', 'stock_counts', 'stock_count_items'];
 
 test('every table with a business_id column has RLS enabled and forced, with at least one policy', async () => {
   const rows = (await env.db.sysQuery(

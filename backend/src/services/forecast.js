@@ -116,7 +116,7 @@ async function loadProductStats() {
     query(
       `SELECT p.id, p.sku, p.name, p.category_id, c.name AS category, c.tax_rate, p.purchase_price, p.selling_price,
               p.stock, p.minimum_stock, p.supplier_id, s.name AS supplier, p.lead_time_days, p.expiry_date, p.is_active,
-              p.created_at, p.unit, p.price_includes_tax
+              p.created_at, p.unit, p.price_includes_tax, p.max_stock, p.reorder_level, p.track_batches
          FROM products p
          JOIN categories c ON c.id = p.category_id
          LEFT JOIN suppliers s ON s.id = p.supplier_id
@@ -124,7 +124,7 @@ async function loadProductStats() {
         ORDER BY p.id`,
     ),
     query(
-      `SELECT si.product_id, (s.created_at AT TIME ZONE $1)::date AS d, SUM(si.quantity) AS qty
+      `SELECT si.product_id, (s.created_at AT TIME ZONE $1)::date AS d, SUM(si.quantity - si.returned_qty) AS qty   -- demand actually kept: returned units are not demand
          FROM sale_items si JOIN sales s ON s.id = si.sale_id
         WHERE s.status = 'completed'
           AND (s.created_at AT TIME ZONE $1)::date >= (now() AT TIME ZONE $1)::date - $2::int
@@ -198,6 +198,14 @@ async function loadProductStats() {
     }
     const slowMoving = f.avgDailySales <= 1 && p.stock >= 5;
 
+    // Reorder (Phase 9) — a RECOMMENDATION only; nothing is ever ordered automatically.
+    // trigger = reorder level when the owner set one, else the minimum stock. Suggested qty tops stock up to max stock (minus what is already on order).
+    const maxStock = p.max_stock == null ? null : Number(p.max_stock);
+    const reorderLevel = p.reorder_level == null ? null : Number(p.reorder_level);
+    const trigger = reorderLevel ?? Number(p.minimum_stock);
+    const needsReorder = trigger > 0 && Number(p.stock) <= trigger;
+    const suggestedReorderQty = needsReorder ? (maxStock != null ? Math.max(Math.round((maxStock - Number(p.stock) - ordered) * 1000) / 1000, 0) : f.recommendedQty) : 0;
+
     return {
       id: p.id,
       sku: p.sku,
@@ -211,6 +219,12 @@ async function loadProductStats() {
       priceIncludesTax: p.price_includes_tax,
       stock: p.stock,
       minimumStock: p.minimum_stock,
+      maxStock,
+      reorderLevel,
+      reorderTrigger: trigger,
+      needsReorder,
+      suggestedReorderQty,
+      trackBatches: p.track_batches,
       supplierId: p.supplier_id,
       supplier: p.supplier,
       leadTimeDays: p.lead_time_days,

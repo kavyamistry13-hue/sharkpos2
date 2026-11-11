@@ -3,6 +3,7 @@ const { getProductStats, restockReasons } = require('./forecast');
 const { badRequest, notFound, conflict } = require('../utils/errors');
 const { invalidateAll } = require('../utils/cache');
 const { assertQuantity } = require('../utils/units');
+const batches = require('./batches');
 
 const brief = (p) => ({
   id: p.id, name: p.name, sku: p.sku, unit: p.unit, category: p.category, supplier: p.supplier, stock: p.stock, minimumStock: p.minimumStock,
@@ -10,10 +11,12 @@ const brief = (p) => ({
   stockoutRisk: p.stockoutRisk, riskLevel: p.riskLevel, stockStatus: p.stockStatus, stockValue: p.stockValue,
   expiryDate: p.expiryDate, daysToExpiry: p.daysToExpiry, expiryStatus: p.expiryStatus, leadTimeDays: p.leadTimeDays,
   recommendedQty: p.recommendedQty, onOrder: p.onOrder,
+  maxStock: p.maxStock, reorderLevel: p.reorderLevel, needsReorder: p.needsReorder, suggestedReorderQty: p.suggestedReorderQty, trackBatches: p.trackBatches,
 });
 
-async function getInventory(filter) {
-  const stats = await getProductStats();
+async function getInventory(filter, { categoryId, supplierId } = {}) {
+  const all = await getProductStats();
+  const stats = all.filter((p) => (!categoryId || p.categoryId === categoryId) && (!supplierId || p.supplierId === supplierId));
   const sum = (arr, k) => Math.round(arr.reduce((a, p) => a + p[k], 0) * 100) / 100;
   const groups = {
     low: stats.filter((p) => p.lowStock && !p.outOfStock),
@@ -29,15 +32,31 @@ async function getInventory(filter) {
     within7: stats.filter((p) => p.expiryStatus === 'within7'),
     within30: stats.filter((p) => p.expiryStatus === 'within30'),
   };
+  // Phase 9 overview: selling value, reorder count and the last 7 days of purchased / sold units straight from the movement ledger.
+  const act = (await query(
+    `SELECT COALESCE(SUM(quantity) FILTER (WHERE movement_type = 'sale'), 0) AS sold, COALESCE(SUM(quantity) FILTER (WHERE movement_type = 'restock'), 0) AS purchased,
+            COUNT(DISTINCT product_id)::int AS changed FROM inventory_movements WHERE created_at > now() - interval '7 days'`)).rows[0];
   const expSummary = (arr) => ({ products: arr.length, units: arr.reduce((a, p) => a + p.stock, 0), value: sum(arr, 'stockValue') });
+  groups.reorder = stats.filter((p) => p.needsReorder);
+  groups.batch = stats.filter((p) => p.trackBatches);
+  groups.nobatch = stats.filter((p) => !p.trackBatches);
   let rows = stats;
   if (filter && groups[filter]) rows = groups[filter];
+  const expWithin = { expired: 'expired', expiring7: '7', expiring30: '30', expiring90: '90' }[filter];
+  if (expWithin) {   // batch expiries + legacy product-level dates (the same report the Expiry screen uses)
+    const ids = new Set((await batches.expiryReport(expWithin)).rows.map((r) => r.productId));
+    rows = stats.filter((p) => ids.has(p.id));
+  }
   rows = [...rows].sort((a, b) => b.stockoutRisk - a.stockoutRisk);
   return {
     summary: {
       totalProducts: stats.length,
       totalUnits: stats.reduce((a, p) => a + p.stock, 0),
       stockValue: sum(stats, 'stockValue'),
+      costValue: sum(stats, 'stockValue'),
+      sellingValue: Math.round(stats.reduce((a, p) => a + p.stock * p.sellingPrice, 0) * 100) / 100,
+      needReorder: stats.filter((p) => p.needsReorder).length,
+      last7Days: { soldUnits: Math.abs(Number(act.sold)), purchasedUnits: Number(act.purchased), productsChanged: act.changed },
       healthy: stats.filter((p) => p.stockStatus === 'healthy').length,
       warning: stats.filter((p) => p.stockStatus === 'warning').length,
       critical: stats.filter((p) => p.stockStatus === 'critical').length,
@@ -70,6 +89,16 @@ async function getAlerts() {
   const rank = { critical: 0, warning: 1, info: 2 };
   out.sort((a, b) => rank[a.severity] - rank[b.severity]);
   return { counts: { critical: out.filter((a) => a.severity === 'critical').length, warning: out.filter((a) => a.severity === 'warning').length, info: out.filter((a) => a.severity === 'info').length }, alerts: out };
+}
+
+/** Products at or below their reorder level with the suggested quantity. Recommendation only — nothing is ordered from here. */
+async function getReorderList() {
+  const rows = (await getProductStats()).filter((p) => p.needsReorder).sort((a, b) => (a.stock / (a.reorderTrigger || 1)) - (b.stock / (b.reorderTrigger || 1)));
+  return {
+    count: rows.length,
+    message: rows.length ? `${rows.length} product${rows.length === 1 ? '' : 's'} need restocking` : 'Nothing needs restocking right now',
+    rows: rows.map((p) => ({ ...brief(p), reorderTrigger: p.reorderTrigger, supplierId: p.supplierId })),
+  };
 }
 
 /** Restock recommendations from the prediction engine (deterministic). */
@@ -153,4 +182,4 @@ async function getMovements(productId, limit = 30) {
   return res.rows.map((r) => ({ id: r.id, type: r.movement_type, quantity: r.quantity, referenceId: r.reference_id, createdAt: r.created_at }));
 }
 
-module.exports = { getInventory, getAlerts, getRestockRecommendations, approveRestock, dismissRestock, listRestockOrders, receiveRestock, getMovements };
+module.exports = { getReorderList, getInventory, getAlerts, getRestockRecommendations, approveRestock, dismissRestock, listRestockOrders, receiveRestock, getMovements };

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Pencil, Plus, Search, Trash2, Package, Star, Barcode, ScanLine } from 'lucide-react';
+import { Pencil, Plus, Search, Trash2, Package, Star, Barcode, ScanLine, FileUp } from 'lucide-react';
 import { api } from '../services/api';
 import { useAsync, useDebounced } from '../hooks/useAsync';
 import { useToast } from '../hooks/useToast';
@@ -8,15 +8,16 @@ import { useAuth } from '../hooks/useAuth';
 import { Async, Badge, Button, Card, ConfirmDialog, DataTable, EmptyState, Field, Input, Modal, PageHeader, Pagination, Select } from '../components/ui';
 import { inr, dateOnly } from '../utils/format';
 import { UNITS, DECIMAL_UNITS } from '../utils/units';
+import { CsvImportModal, ExportMenu } from '../components/CsvTools';
 
 const STATUS = { in_stock: ['ok', 'In stock'], low_stock: ['warn', 'Low stock'], out_of_stock: ['bad', 'Out of stock'], expired: ['bad', 'Expired'] };
-const EMPTY = { barcode: '', name: '', sku: '', categoryId: '', unit: 'pcs', priceIncludesTax: true, purchasePrice: '', sellingPrice: '', stock: '0', minimumStock: '0', supplierId: '', leadTimeDays: '3', expiryDate: '' };
+const EMPTY = { barcode: '', name: '', sku: '', categoryId: '', unit: 'pcs', priceIncludesTax: true, purchasePrice: '', sellingPrice: '', stock: '0', minimumStock: '0', maxStock: '', reorderLevel: '', supplierId: '', leadTimeDays: '3', expiryDate: '' };
 
 export function ProductForm({ product, lookups, onClose, onSaved }) {
   const toast = useToast();
   const [f, setF] = useState(product ? {
     name: product.name, sku: product.sku, categoryId: String(product.categoryId), unit: product.unit || 'pcs', priceIncludesTax: Boolean(product.priceIncludesTax), purchasePrice: String(product.purchasePrice), sellingPrice: String(product.sellingPrice),
-    stock: String(product.stock), minimumStock: String(product.minimumStock), supplierId: product.supplierId ? String(product.supplierId) : '', leadTimeDays: String(product.leadTimeDays), expiryDate: product.expiryDate || '',
+    stock: String(product.stock), minimumStock: String(product.minimumStock), maxStock: product.maxStock == null ? '' : String(product.maxStock), reorderLevel: product.reorderLevel == null ? '' : String(product.reorderLevel), supplierId: product.supplierId ? String(product.supplierId) : '', leadTimeDays: String(product.leadTimeDays), expiryDate: product.expiryDate || '',
   } : EMPTY);
   const [errs, setErrs] = useState({});
   const [busy, setBusy] = useState(false);
@@ -36,7 +37,7 @@ export function ProductForm({ product, lookups, onClose, onSaved }) {
     setBusy(true);
     const body = {
       name: f.name.trim(), sku: f.sku.trim() || undefined, categoryId: Number(f.categoryId), unit: f.unit, priceIncludesTax: f.priceIncludesTax, purchasePrice: Number(f.purchasePrice), sellingPrice: Number(f.sellingPrice),
-      stock: parseFloat(f.stock || 0), minimumStock: parseFloat(f.minimumStock || 0), supplierId: f.supplierId ? Number(f.supplierId) : null, leadTimeDays: Number(f.leadTimeDays || 0), expiryDate: f.expiryDate || null,
+      stock: parseFloat(f.stock || 0), minimumStock: parseFloat(f.minimumStock || 0), maxStock: f.maxStock === '' ? null : parseFloat(f.maxStock), reorderLevel: f.reorderLevel === '' ? null : parseFloat(f.reorderLevel), supplierId: f.supplierId ? Number(f.supplierId) : null, leadTimeDays: Number(f.leadTimeDays || 0), expiryDate: f.expiryDate || null,
       ...(!product && f.barcode.trim() ? { barcode: f.barcode.trim() } : {}),
     };
     try {
@@ -65,6 +66,8 @@ export function ProductForm({ product, lookups, onClose, onSaved }) {
         <Field label="Purchase price (₹, excl. GST)" hint="Used for profit. Updated automatically when you receive goods at a new cost." error={errs.purchasePrice}><Input inputMode="decimal" value={f.purchasePrice} onChange={set('purchasePrice')} /></Field>
         <Field label={`Current stock (${f.unit})`} error={errs.stock}><Input inputMode={decimalOk ? 'decimal' : 'numeric'} value={f.stock} onChange={set('stock')} /></Field>
         <Field label={`Minimum stock (${f.unit})`} hint="Below this, the product shows as low stock."><Input inputMode={decimalOk ? 'decimal' : 'numeric'} value={f.minimumStock} onChange={set('minimumStock')} /></Field>
+        <Field label={`Reorder level (${f.unit})`} hint="Optional. Reorder suggestions start here (default: the minimum stock)."><Input inputMode={decimalOk ? 'decimal' : 'numeric'} value={f.reorderLevel} onChange={set('reorderLevel')} /></Field>
+        <Field label={`Maximum stock (${f.unit})`} hint="Optional. Suggested order tops stock up to this level."><Input inputMode={decimalOk ? 'decimal' : 'numeric'} value={f.maxStock} onChange={set('maxStock')} /></Field>
         <Field label="Supplier"><Select value={f.supplierId} onChange={pickSupplier}><option value="">None</option>{lookups.suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
         <Field label="Supplier lead time (days)"><Input inputMode="numeric" value={f.leadTimeDays} onChange={set('leadTimeDays')} /></Field>
         <Field label="Expiry date" hint="Only for perishable items."><Input type="date" value={f.expiryDate} onChange={set('expiryDate')} /></Field>
@@ -128,11 +131,14 @@ export default function Products() {
   const dq = useDebounced(q);
   const [categoryId, setCategoryId] = useState('');
   const [status, setStatus] = useState('');
+  const [supplierId, setSupplierId] = useState('');
+  const [extra, setExtra] = useState({ reorder: '', batch: '', expiry: '', active: '' });
+  const [importing, setImporting] = useState(false);
   const [sort, setSort] = useState('name');
   const [dir, setDir] = useState('asc');
   const [page, setPage] = useState(1);
   const lookups = useAsync(() => api.get('/products/lookups'), []);
-  const list = useAsync(() => api.get('/products', { q: dq, categoryId, status, sort, dir, page, limit: 25 }), [dq, categoryId, status, sort, dir, page]);
+  const list = useAsync(() => api.get('/products', { q: dq, categoryId, supplierId, status, ...extra, sort, dir, page, limit: 25 }), [dq, categoryId, supplierId, status, extra, sort, dir, page]);
   const [editing, setEditing] = useState(null); // null | 'new' | product
   const [deleting, setDeleting] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -159,14 +165,23 @@ export default function Products() {
 
   return (
     <div className="mx-auto max-w-[1280px]">
-      <PageHeader title="Products" subtitle="Add, edit and organise everything you sell." actions={<div className="flex flex-wrap gap-2"><Button onClick={() => setEditing('new')} disabled={!lookups.data}><Plus className="size-4" aria-hidden="true" />Add product</Button><Link to="/products/scan-add" data-testid="scan-add-link" className="inline-flex h-10 items-center gap-2 rounded-lg border border-brand bg-white px-4 text-sm font-semibold text-brand hover:bg-brand-soft"><ScanLine className="size-4" aria-hidden="true" />Scan &amp; Add Products</Link></div>} />
+      <PageHeader title="Products" subtitle="Add, edit and organise everything you sell." actions={<div className="flex flex-wrap gap-2"><Button onClick={() => setEditing('new')} disabled={!lookups.data}><Plus className="size-4" aria-hidden="true" />Add product</Button><Button variant="secondary" onClick={() => setImporting(true)} data-testid="open-import"><FileUp className="size-4" aria-hidden="true" />Import CSV</Button><ExportMenu /><Link to="/products/scan-add" data-testid="scan-add-link" className="inline-flex h-10 items-center gap-2 rounded-lg border border-brand bg-white px-4 text-sm font-semibold text-brand hover:bg-brand-soft"><ScanLine className="size-4" aria-hidden="true" />Scan &amp; Add Products</Link></div>} />
       <Card>
         <div className="grid gap-3 border-b border-line p-4 sm:grid-cols-2 lg:grid-cols-[1.5fr_1fr_1fr_1fr_auto]">
-          <div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted" aria-hidden="true" /><Input className="pl-9" aria-label="Search products" placeholder="Search name, SKU or category" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} /></div>
+          <div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted" aria-hidden="true" /><Input className="pl-9" aria-label="Search products" placeholder="Search name, SKU, barcode or category" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} /></div>
           <Select aria-label="Category" value={categoryId} onChange={(e) => { setCategoryId(e.target.value); setPage(1); }}><option value="">All categories</option>{lookups.data && lookups.data.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>
           <Select aria-label="Status" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}><option value="">All statuses</option><option value="in_stock">In stock</option><option value="low_stock">Low stock</option><option value="out_of_stock">Out of stock</option><option value="expired">Expired</option></Select>
           <Select aria-label="Sort by" value={sort} onChange={(e) => setSort(e.target.value)}><option value="name">Sort: name</option><option value="price">Sort: price</option><option value="stock">Sort: stock</option><option value="category">Sort: category</option><option value="margin">Sort: margin</option><option value="risk">Sort: stockout risk</option></Select>
           <Button variant="secondary" onClick={() => setDir(dir === 'asc' ? 'desc' : 'asc')} aria-label={`Sort direction: ${dir === 'asc' ? 'ascending' : 'descending'}`}>{dir === 'asc' ? 'A → Z' : 'Z → A'}</Button>
+        </div>
+        <div className="grid gap-3 border-b border-line px-4 pb-4 sm:grid-cols-2 lg:grid-cols-4" data-testid="more-filters">
+          <Select aria-label="Supplier" value={supplierId} onChange={(e) => { setSupplierId(e.target.value); setPage(1); }}><option value="">All suppliers</option>{lookups.data && lookups.data.suppliers.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>
+          <Select aria-label="Reorder" value={extra.reorder} onChange={(e) => { setExtra({ ...extra, reorder: e.target.value }); setPage(1); }}><option value="">Any stock level</option><option value="true">Needs reorder</option></Select>
+          <Select aria-label="Expiry" value={extra.expiry} onChange={(e) => { setExtra({ ...extra, expiry: e.target.value }); setPage(1); }}><option value="">Any expiry</option><option value="expired">Expired</option><option value="7">Expiring in 7 days</option><option value="30">Expiring in 30 days</option><option value="90">Expiring in 90 days</option></Select>
+          <div className="grid grid-cols-2 gap-3">
+            <Select aria-label="Batches" value={extra.batch} onChange={(e) => { setExtra({ ...extra, batch: e.target.value }); setPage(1); }}><option value="">Batch: any</option><option value="yes">Batch-tracked</option><option value="no">No batches</option></Select>
+            <Select aria-label="Active" value={extra.active} onChange={(e) => { setExtra({ ...extra, active: e.target.value }); setPage(1); }}><option value="">Active</option><option value="inactive">Archived</option></Select>
+          </div>
         </div>
         <Async state={list} rows={6} errorText="Unable to load products.">
           {(d) => (
@@ -177,6 +192,7 @@ export default function Products() {
           )}
         </Async>
       </Card>
+      {importing && <CsvImportModal onClose={() => setImporting(false)} onImported={() => { setImporting(false); list.reload(); lookups.reload(); }} />}
       {editing && lookups.data && <ProductForm product={editing === 'new' ? null : editing} lookups={lookups.data} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); list.reload(); }} />}
       <ConfirmDialog open={!!deleting} onClose={() => setDeleting(null)} danger loading={busy} title="Delete product?" confirmLabel="Delete product" onConfirm={remove}
         message={deleting ? `${deleting.name} will be removed from the catalogue and the POS. Past sales keep their history.` : ''} />

@@ -52,7 +52,7 @@ router.post('/:id/order', validate({ params: z.object({ id }), body: z.object({ 
 }));
 
 router.post('/:id/receive', validate({ params: z.object({ id }), body: z.object({
-  items: z.array(z.object({ itemId: id, quantity: stockSchema.default(0), rejectedQuantity: stockSchema.default(0), unitCost: money.optional() })).min(1).max(200),
+  items: z.array(z.object({ itemId: id, quantity: stockSchema.default(0), rejectedQuantity: stockSchema.default(0), unitCost: money.optional(), batchNo: z.string().trim().min(1).max(40).optional(), manufacturedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).min(1).max(200),
   invoiceNo: z.string().trim().max(40).nullable().optional(), notes,
 }) }), asyncH(async (req, res) => {
   const raw = req.get('idempotency-key');

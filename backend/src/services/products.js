@@ -6,6 +6,7 @@ const { assertWithinLimit } = require('./billing/subscription');
 const { currentBusinessId } = require('../db');
 const { assertQuantity, isDecimalUnit } = require('../utils/units');
 const barcodes = require('./barcodes');
+const batches = require('./batches');
 const crypto = require('crypto');
 
 const SORTS = {
@@ -21,6 +22,8 @@ const SORTS = {
 const statusLabel = (p) => (p.outOfStock ? 'out_of_stock' : p.lowStock ? 'low_stock' : p.expiryStatus === 'expired' ? 'expired' : 'in_stock');
 
 async function listProducts(f) {
+  // Inactive (archived) products are not part of the live stats: a separate, simple, paginated query.
+  if (f.active === 'inactive') return listInactive(f);
   let rows = await getProductStats();
   if (f.q) {
     const q = f.q.toLowerCase();
@@ -31,6 +34,13 @@ async function listProducts(f) {
   if (f.categoryId) rows = rows.filter((p) => p.categoryId === f.categoryId);
   if (f.supplierId) rows = rows.filter((p) => p.supplierId === f.supplierId);
   if (f.status) rows = rows.filter((p) => statusLabel(p) === f.status);
+  if (f.reorder) rows = rows.filter((p) => p.needsReorder);
+  if (f.batch === 'yes') rows = rows.filter((p) => p.trackBatches);
+  if (f.batch === 'no') rows = rows.filter((p) => !p.trackBatches);
+  if (f.expiry) {                       // batch expiries + legacy product-level dates, from the same report the Expiry screen uses
+    const ids = new Set((await batches.expiryReport(f.expiry)).rows.map((r) => r.productId));
+    rows = rows.filter((p) => ids.has(p.id));
+  }
   const sorted = [...rows].sort(SORTS[f.sort] || SORTS.name);
   if (f.dir === 'desc') sorted.reverse();
   const total = sorted.length;
@@ -38,6 +48,20 @@ async function listProducts(f) {
   const codes = await barcodes.mapForProducts(slice.map((p) => p.id));
   const page = slice.map((p) => ({ ...p, status: statusLabel(p), barcodes: codes.get(p.id) || [] }));
   return { total, page: f.page, limit: f.limit, rows: page };
+}
+
+async function listInactive(f) {
+  const params = []; const where = ['p.is_active = FALSE'];
+  if (f.q) { params.push(`%${f.q.replace(/[\\%_]/g, '\\$&')}%`); where.push(`(p.name ILIKE $${params.length} OR p.sku ILIKE $${params.length})`); }
+  if (f.categoryId) { params.push(f.categoryId); where.push(`p.category_id = $${params.length}`); }
+  if (f.supplierId) { params.push(f.supplierId); where.push(`p.supplier_id = $${params.length}`); }
+  const total = (await query(`SELECT COUNT(*)::int AS n FROM products p WHERE ${where.join(' AND ')}`, params)).rows[0].n;
+  params.push(f.limit, (f.page - 1) * f.limit);
+  const rows = (await query(
+    `SELECT p.id, p.sku, p.name, p.unit, p.stock, p.purchase_price, p.selling_price, c.name AS category, s.name AS supplier
+       FROM products p JOIN categories c ON c.id = p.category_id LEFT JOIN suppliers s ON s.id = p.supplier_id
+      WHERE ${where.join(' AND ')} ORDER BY p.name LIMIT $${params.length - 1} OFFSET $${params.length}`, params)).rows;
+  return { total, page: f.page, limit: f.limit, rows: rows.map((r) => ({ id: r.id, sku: r.sku, name: r.name, unit: r.unit, stock: Number(r.stock), purchasePrice: r.purchase_price, sellingPrice: r.selling_price, category: r.category, supplier: r.supplier, isActive: false, status: 'inactive', barcodes: [] })) };
 }
 
 async function getLookups() {
@@ -58,26 +82,36 @@ async function getProduct(id) {
   return { ...p, status: statusLabel(p), barcodes: (await barcodes.mapForProducts([id])).get(id) || [] };
 }
 
+/** Optional stock targets: whole numbers for counted units, and max stock can never be below the minimum. */
+function assertStockLevels(unit, name, min, max, reorder) {
+  if (max != null) { assertQuantity(unit, max, 'Maximum stock', name); if (max < (min || 0)) throw badRequest('Maximum stock cannot be lower than the minimum stock.'); }
+  if (reorder != null) { assertQuantity(unit, reorder, 'Reorder level', name); if (max != null && reorder > max) throw badRequest('Reorder level cannot be higher than the maximum stock.'); }
+}
+
+/** Creates ONE product inside the caller's transaction (also used by the CSV import, so imported and hand-made products follow identical rules). */
+async function createProductTx(client, input, userId) {
+  const sku = input.sku || `SKU-${crypto.randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
+  const unit = input.unit || 'pcs';
+  assertQuantity(unit, input.stock, 'Stock', input.name);
+  assertQuantity(unit, input.minimumStock, 'Minimum stock', input.name);
+  assertStockLevels(unit, input.name, input.minimumStock, input.maxStock, input.reorderLevel);
+  const res = await client.query(
+    `INSERT INTO products (sku, name, category_id, purchase_price, selling_price, stock, minimum_stock, supplier_id, lead_time_days, expiry_date, unit, price_includes_tax, max_stock, reorder_level)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
+    [sku, input.name, input.categoryId, input.purchasePrice, input.sellingPrice, input.stock, input.minimumStock, input.supplierId || null, input.leadTimeDays, input.expiryDate || null, unit, Boolean(input.priceIncludesTax), input.maxStock ?? null, input.reorderLevel ?? null],
+  );
+  await client.query(`INSERT INTO product_cost_history (product_id, cost, source, created_by) VALUES ($1,$2,'initial',$3)`, [res.rows[0].id, input.purchasePrice, userId]);
+  if (input.stock > 0) {
+    await client.query(`INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type) VALUES ($1,'initial',$2,$3,NULL)`, [res.rows[0].id, input.stock, userId]);
+  }
+  // optional manufacturer barcode, saved atomically with the product (a duplicate rolls the whole creation back)
+  if (input.barcode) await barcodes.insertBarcode(client, res.rows[0].id, input.barcode, userId, { primary: true });
+  return res.rows[0].id;
+}
+
 async function createProduct(input, userId) {
   await assertWithinLimit(currentBusinessId(), 'products');
-  const id = await withTransaction(async (client) => {
-    const sku = input.sku || `SKU-${crypto.randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
-    const unit = input.unit || 'pcs';
-    assertQuantity(unit, input.stock, 'Stock', input.name);
-    assertQuantity(unit, input.minimumStock, 'Minimum stock', input.name);
-    const res = await client.query(
-      `INSERT INTO products (sku, name, category_id, purchase_price, selling_price, stock, minimum_stock, supplier_id, lead_time_days, expiry_date, unit, price_includes_tax)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-      [sku, input.name, input.categoryId, input.purchasePrice, input.sellingPrice, input.stock, input.minimumStock, input.supplierId || null, input.leadTimeDays, input.expiryDate || null, unit, Boolean(input.priceIncludesTax)],
-    );
-    await client.query(`INSERT INTO product_cost_history (product_id, cost, source, created_by) VALUES ($1,$2,'initial',$3)`, [res.rows[0].id, input.purchasePrice, userId]);
-    if (input.stock > 0) {
-      await client.query(`INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type) VALUES ($1,'initial',$2,$3,NULL)`, [res.rows[0].id, input.stock, userId]);
-    }
-    // optional manufacturer barcode, saved atomically with the product (a duplicate rolls the whole creation back)
-    if (input.barcode) await barcodes.insertBarcode(client, res.rows[0].id, input.barcode, userId, { primary: true });
-    return res.rows[0].id;
-  });
+  const id = await withTransaction((client) => createProductTx(client, input, userId));
   invalidateAll();
   return getProduct(id);
 }
@@ -103,17 +137,19 @@ async function quickCreate(input, userId) {
 
 async function updateProduct(id, input, userId) {
   await withTransaction(async (client) => {
-    const cur = (await client.query('SELECT name, stock, minimum_stock, unit, purchase_price FROM products WHERE id = $1 AND is_active = TRUE FOR UPDATE', [id])).rows[0];
+    const cur = (await client.query('SELECT name, stock, minimum_stock, unit, purchase_price, max_stock, reorder_level FROM products WHERE id = $1 AND is_active = TRUE FOR UPDATE', [id])).rows[0];
     if (!cur) throw notFound('Product not found.');
     const map = {
       sku: 'sku', name: 'name', categoryId: 'category_id', purchasePrice: 'purchase_price', sellingPrice: 'selling_price',
       stock: 'stock', minimumStock: 'minimum_stock', supplierId: 'supplier_id', leadTimeDays: 'lead_time_days', expiryDate: 'expiry_date',
-      unit: 'unit', priceIncludesTax: 'price_includes_tax',
+      unit: 'unit', priceIncludesTax: 'price_includes_tax', maxStock: 'max_stock', reorderLevel: 'reorder_level',
     };
     // The unit decides whether fractions are allowed; check the values the product will have AFTER this update.
     const nextUnit = input.unit !== undefined ? input.unit : cur.unit;
     assertQuantity(nextUnit, input.stock !== undefined ? input.stock : cur.stock, 'Stock', cur.name);
     assertQuantity(nextUnit, input.minimumStock !== undefined ? input.minimumStock : cur.minimum_stock, 'Minimum stock', cur.name);
+    const nextMin = input.minimumStock !== undefined ? input.minimumStock : Number(cur.minimum_stock);
+    assertStockLevels(nextUnit, cur.name, nextMin, input.maxStock !== undefined ? input.maxStock : (cur.max_stock == null ? null : Number(cur.max_stock)), input.reorderLevel !== undefined ? input.reorderLevel : (cur.reorder_level == null ? null : Number(cur.reorder_level)));
     const sets = [];
     const params = [];
     for (const [k, col] of Object.entries(map)) {
@@ -198,5 +234,5 @@ async function getProductSuppliers(productId) {
   return res.rows.map((r) => ({ supplierId: r.supplier_id, supplier: r.supplier, isActive: r.is_active, supplierSku: r.supplier_sku, packSize: r.pack_size, minOrderQty: r.min_order_qty, leadTimeDays: r.lead_time_days, lastCost: r.last_cost, isPreferred: r.is_preferred }));
 }
 
-module.exports = {
+module.exports = { createProductTx, assertStockLevels,
   quickCreate, addStock, getCostHistory, getProductSuppliers, listProducts, getLookups, getProduct, createProduct, updateProduct, deleteProduct, searchForPos, statusLabel };

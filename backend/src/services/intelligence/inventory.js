@@ -15,7 +15,7 @@ async function loadMovement() {
       `SELECT p.id, (p.created_at AT TIME ZONE $1)::date::text AS created_day,
               (MAX(s.created_at) AT TIME ZONE $1)::date::text AS last_sold_day
          FROM products p
-         LEFT JOIN sale_items si ON si.product_id = p.id
+         LEFT JOIN sale_items si ON si.product_id = p.id AND si.quantity > si.returned_qty   -- a line that was entirely returned is not a sale
          LEFT JOIN sales s ON s.id = si.sale_id AND s.status = 'completed'
         WHERE p.is_active GROUP BY p.id`, [tz]),
     todayLocal(),

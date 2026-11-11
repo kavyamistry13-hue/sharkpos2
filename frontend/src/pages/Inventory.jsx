@@ -4,12 +4,18 @@ import { Boxes, Check, Sparkles, X, Info, PackageCheck } from 'lucide-react';
 import { api } from '../services/api';
 import { useAsync } from '../hooks/useAsync';
 import { useToast } from '../hooks/useToast';
-import { Async, Badge, Button, Card, CardHeader, DataTable, EmptyState, Field, Input, Meter, Modal, PageHeader, Segmented, Stat, StockBadge, Tabs } from '../components/ui';
+import { Async, Badge, Button, Card, CardHeader, DataTable, EmptyState, Field, Input, Meter, Modal, PageHeader, Segmented, Select, Stat, StockBadge, Tabs } from '../components/ui';
 import { inr, num, pct, dateTime } from '../utils/format';
+import { ReorderTab, ExpiryTab, BatchesTab } from '../components/InventoryPanels';
+import { AdjustModal, TimelineModal, AddBatchModal } from '../components/StockTools';
+import { ExportMenu } from '../components/CsvTools';
+import StockCount from '../components/StockCount';
 
 const FILTERS = [
   { value: '', label: 'All' }, { value: 'low', label: 'Low stock' }, { value: 'out', label: 'Out of stock' }, { value: 'over', label: 'Overstocked' },
-  { value: 'fast', label: 'Fast-moving' }, { value: 'slow', label: 'Slow-moving' }, { value: 'expiring', label: 'Expiring' },
+  { value: 'fast', label: 'Fast-moving' }, { value: 'slow', label: 'Slow-moving' },
+  { value: 'reorder', label: 'Needs reorder' }, { value: 'expired', label: 'Expired' }, { value: 'expiring7', label: 'Expiring ≤7d' }, { value: 'expiring30', label: '≤30d' }, { value: 'expiring90', label: '≤90d' },
+  { value: 'batch', label: 'Batch-tracked' }, { value: 'nobatch', label: 'No batches' },
 ];
 
 function RiskCell({ p }) {
@@ -148,37 +154,19 @@ function AlertsTab() {
   );
 }
 
-function ExpiryTab() {
-  const state = useAsync(() => api.get('/inventory', { filter: 'expiring' }), []);
-  return (
-    <Async state={state} rows={4}>
-      {(d) => {
-        const e = d.summary.expiring;
-        const cards = [['Expired', e.expired, 'bad'], ['Expiring within 7 days', e.within7, 'warn'], ['Expiring within 30 days', e.within30, 'info']];
-        return (
-          <>
-            <div className="mb-4 grid gap-3 sm:grid-cols-3">{cards.map(([label, x, tone]) => <Stat key={label} label={label} tone={tone} value={`${x.products} products`} sub={`${num(x.units)} units · ${inr(x.value)} at cost`} />)}</div>
-            <Card><DataTable rows={d.rows.filter((r) => r.expiryStatus).sort((a, b) => a.daysToExpiry - b.daysToExpiry)} columns={[
-              { key: 'name', header: 'Product', render: (r) => <span className="font-semibold">{r.name}</span> },
-              { key: 'stock', header: 'Units', align: 'right' },
-              { key: 'value', header: 'Value', align: 'right', render: (r) => inr(r.stockValue) },
-              { key: 'exp', header: 'Expires', render: (r) => r.daysToExpiry < 0 ? `${Math.abs(r.daysToExpiry)} days ago` : `in ${r.daysToExpiry} days` },
-              { key: 'st', header: 'Status', render: (r) => <Badge tone={r.expiryStatus === 'expired' ? 'bad' : r.expiryStatus === 'within7' ? 'warn' : 'info'} dot>{r.expiryStatus === 'expired' ? 'Expired' : r.expiryStatus === 'within7' ? 'Expiring soon' : 'Within 30 days'}</Badge> },
-            ]} empty={<EmptyState title="Nothing is close to expiry" />} /></Card>
-          </>
-        );
-      }}
-    </Async>
-  );
-}
-
 export default function Inventory() {
   const [params, setParams] = useSearchParams();
   const view = params.get('view') || 'overview';
   const [filter, setFilter] = useState(params.get('filter') || '');
   const [detail, setDetail] = useState(null);
   const [restockFocus, setRestockFocus] = useState(null);
-  const inv = useAsync(() => api.get('/inventory', { filter }), [filter]);
+  const [categoryId, setCategoryId] = useState('');
+  const [supplierId, setSupplierId] = useState('');
+  const [adjust, setAdjust] = useState(null);
+  const [history, setHistory] = useState(null);
+  const [batchFor, setBatchFor] = useState(null);
+  const lookups = useAsync(() => api.get('/products/lookups'), []);
+  const inv = useAsync(() => api.get('/inventory', { filter, categoryId, supplierId }), [filter, categoryId, supplierId]);
   const restockCount = useAsync(() => api.get('/ai/restock'), []);
   const refresh = () => { inv.reload(); restockCount.reload(); };
   const setView = (v) => setParams(v === 'overview' ? {} : { view: v });
@@ -186,7 +174,17 @@ export default function Inventory() {
 
   return (
     <div className="mx-auto max-w-[1280px]">
-      <PageHeader title="Inventory" subtitle="Stock health, demand forecasts and restocking, based on recent sales." />
+      <PageHeader title="Inventory" subtitle="Stock health, demand forecasts and restocking, based on recent sales." actions={<ExportMenu kinds={['inventory', 'products']} label="Export" />} />
+      {s && (
+        <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" data-testid="inventory-overview">
+          <Stat label="Products" value={num(s.totalProducts)} sub={`${num(s.totalUnits)} units in stock`} />
+          <Stat label="Stock value (cost)" value={inr(s.costValue)} />
+          <Stat label="Stock value (selling)" value={inr(s.sellingValue)} sub="at today's prices" />
+          <Stat label="Need restocking" value={s.needReorder} tone={s.needReorder ? 'warn' : 'ok'} sub={s.needReorder ? 'see Reorder' : 'all good'} />
+          <Stat label="Sold, last 7 days" value={num(s.last7Days.soldUnits)} sub="units" />
+          <Stat label="Purchased, last 7 days" value={num(s.last7Days.purchasedUnits)} sub="units received" />
+        </div>
+      )}
       {s && (
         <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">
           <Stat label="Stock value" value={inr(s.stockValue)} sub={`${num(s.totalUnits)} units at cost`} />
@@ -200,14 +198,23 @@ export default function Inventory() {
       <Tabs value={view} onChange={setView} tabs={[
         { value: 'overview', label: 'Stock overview' },
         { value: 'restock', label: 'AI Restock', count: restockCount.data ? restockCount.data.count : undefined },
+        { value: 'reorder', label: 'Reorder', count: s ? s.needReorder : undefined },
         { value: 'orders', label: 'Restock orders' },
         { value: 'alerts', label: 'Alerts' },
         { value: 'expiry', label: 'Expiry' },
+        { value: 'batches', label: 'Batches' },
+        { value: 'count', label: 'Stock count' },
       ]} />
 
       {view === 'overview' && (
         <Card>
-          <div className="overflow-x-auto border-b border-line p-4"><Segmented label="Filter products" value={filter} onChange={setFilter} options={FILTERS} /></div>
+          <div className="space-y-3 border-b border-line p-4">
+            <div className="overflow-x-auto"><Segmented label="Filter products" value={filter} onChange={setFilter} options={FILTERS} /></div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:max-w-xl">
+              <Select aria-label="Category" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}><option value="">All categories</option>{lookups.data && lookups.data.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>
+              <Select aria-label="Supplier" value={supplierId} onChange={(e) => setSupplierId(e.target.value)}><option value="">All suppliers</option>{lookups.data && lookups.data.suppliers.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>
+            </div>
+          </div>
           <Async state={inv} rows={6} errorText="Unable to load inventory.">
             {(d) => <DataTable rows={d.rows.slice(0, 60)} onRowClick={(r) => setDetail(r.id)} columns={[
               { key: 'name', header: 'Product', render: (r) => <div><p className="font-semibold">{r.name}</p><p className="text-xs text-muted">{r.category}</p></div> },
@@ -216,6 +223,7 @@ export default function Inventory() {
               { key: 'days', header: 'Days left', align: 'right', render: (r) => r.daysToStockout ?? '—' },
               { key: 'risk', header: 'Stockout risk', render: (r) => <RiskCell p={r} /> },
               { key: 'status', header: 'Status', render: (r) => <StockBadge status={r.stockStatus} /> },
+              { key: 'tools', header: <span className="sr-only">Stock tools</span>, align: 'right', render: (r) => <div className="flex justify-end gap-1" onClick={(e) => e.stopPropagation()}><Button size="sm" variant="secondary" onClick={() => setAdjust(r)}>Adjust</Button><Button size="sm" variant="ghost" onClick={() => setHistory(r)}>History</Button><Button size="sm" variant="ghost" onClick={() => setBatchFor(r)}>+ Batch</Button></div> },
               { key: 'rec', header: 'Restock', align: 'right', render: (r) => r.recommendedQty > 0 ? <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); setRestockFocus(r.id); setView('restock'); }}><Sparkles className="size-3.5 text-brand" aria-hidden="true" />{r.recommendedQty}</Button> : <span className="text-muted">—</span> },
             ]} empty={<EmptyState icon={Boxes} title="No products in this view" />} />}
           </Async>
@@ -223,9 +231,15 @@ export default function Inventory() {
         </Card>
       )}
       {view === 'restock' && <RestockTab onChanged={refresh} focusId={restockFocus} />}
+      {view === 'reorder' && <ReorderTab onAdjust={setAdjust} onHistory={setHistory} />}
       {view === 'orders' && <OrdersTab onChanged={refresh} />}
       {view === 'alerts' && <AlertsTab />}
       {view === 'expiry' && <ExpiryTab />}
+      {view === 'batches' && <BatchesTab />}
+      {view === 'count' && <StockCount />}
+      {adjust && <AdjustModal product={adjust} onClose={() => setAdjust(null)} onDone={() => { setAdjust(null); refresh(); }} />}
+      {history && <TimelineModal product={history} onClose={() => setHistory(null)} />}
+      {batchFor && <AddBatchModal product={batchFor} onClose={() => setBatchFor(null)} onDone={() => { setBatchFor(null); refresh(); }} />}
       {detail && <ForecastModal productId={detail} onClose={() => setDetail(null)} onRestock={() => { setDetail(null); setView('restock'); }} />}
     </div>
   );

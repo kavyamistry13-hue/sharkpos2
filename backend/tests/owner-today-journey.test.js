@@ -20,7 +20,7 @@ test('owner today: owner/manager only; shape, honest labels, and it reuses the A
   assert.equal((await as(s, 'manager').get('/intelligence/owner-today')).status, 200);
   const r = (await as(s).get('/intelligence/owner-today')).body;
   assert.deepEqual(Object.keys(r.kinds).sort(), ['actual', 'estimated', 'forecast', 'recommendation']);
-  assert.deepEqual(r.needsAttention.map((x) => x.key), ['critical_stock', 'expiring', 'credit', 'unusual', 'suppliers', 'cash']);
+  assert.deepEqual(r.needsAttention.map((x) => x.key), ['critical_stock', 'restock', 'expiring', 'expired', 'credit', 'unusual', 'suppliers', 'purchases', 'cash']);
   assert.equal(r.business.grossProfit.kind, 'estimated');
   assert.equal(r.business.sales.kind, 'actual');
   assert.equal(r.forecast.kind, 'forecast');

@@ -89,14 +89,14 @@ function NewPoModal({ onClose, onCreated }) {
 function ReceiveModal({ po, onClose, onReceived }) {
   const toast = useToast();
   const open = po.items.filter((i) => i.outstandingQty > 0);
-  const [rows, setRows] = useState(() => Object.fromEntries(open.map((i) => [i.id, { quantity: '', rejected: '', unitCost: String(i.unitCost) }])));
+  const [rows, setRows] = useState(() => Object.fromEntries(open.map((i) => [i.id, { quantity: '', rejected: '', unitCost: String(i.unitCost), batchNo: '', expiryDate: '' }])));
   const [invoiceNo, setInvoiceNo] = useState('');
   const [busy, setBusy] = useState(false);
   const [key] = useState(() => uuid());   // one key per receipt screen: a double-tap or retry cannot add the stock twice
   const set = (id, k, v) => setRows({ ...rows, [id]: { ...rows[id], [k]: v } });
 
   const save = async () => {
-    const items = open.map((i) => ({ itemId: i.id, quantity: parseFloat(rows[i.id].quantity) || 0, rejectedQuantity: parseFloat(rows[i.id].rejected) || 0, unitCost: parseFloat(rows[i.id].unitCost) || 0 }))
+    const items = open.map((i) => ({ itemId: i.id, quantity: parseFloat(rows[i.id].quantity) || 0, rejectedQuantity: parseFloat(rows[i.id].rejected) || 0, unitCost: parseFloat(rows[i.id].unitCost) || 0, ...(rows[i.id].batchNo.trim() ? { batchNo: rows[i.id].batchNo.trim() } : {}), ...(rows[i.id].expiryDate ? { expiryDate: rows[i.id].expiryDate } : {}) }))
       .filter((x) => x.quantity > 0 || x.rejectedQuantity > 0);
     if (!items.length) return toast.error('Enter what arrived for at least one product.');
     setBusy(true);
@@ -113,7 +113,7 @@ function ReceiveModal({ po, onClose, onReceived }) {
       footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button variant="success" loading={busy} onClick={save}>Add to stock</Button></>}>
       <p className="mb-3 text-sm text-muted">Enter what actually arrived in this delivery. Leave a line empty if nothing came. Damaged or rejected goods are not added to stock and stay on order.</p>
       <div className="overflow-x-auto"><table className="w-full text-sm">
-        <thead><tr className="text-left text-xs text-muted"><th className="pb-1 font-medium">Product</th><th className="pb-1 text-right font-medium">Still to come</th><th className="pb-1 font-medium">Received</th><th className="pb-1 font-medium">Rejected</th><th className="pb-1 font-medium">Cost each (₹)</th></tr></thead>
+        <thead><tr className="text-left text-xs text-muted"><th className="pb-1 font-medium">Product</th><th className="pb-1 text-right font-medium">Still to come</th><th className="pb-1 font-medium">Received</th><th className="pb-1 font-medium">Rejected</th><th className="pb-1 font-medium">Cost each (₹)</th><th className="pb-1 font-medium">Batch no. <span className="font-normal">(optional)</span></th><th className="pb-1 font-medium">Expiry <span className="font-normal">(optional)</span></th></tr></thead>
         <tbody>{open.map((i) => (
           <tr key={i.id} className="border-t border-line-soft">
             <td className="py-1.5 pr-2 font-medium">{i.name}</td>
@@ -121,6 +121,8 @@ function ReceiveModal({ po, onClose, onReceived }) {
             <td className="py-1.5 pr-2"><Input className="h-9 w-20" inputMode="decimal" aria-label={`Received ${i.name}`} value={rows[i.id].quantity} onChange={(e) => set(i.id, 'quantity', decimalOnly(e.target.value))} /></td>
             <td className="py-1.5 pr-2"><Input className="h-9 w-20" inputMode="decimal" aria-label={`Rejected ${i.name}`} value={rows[i.id].rejected} onChange={(e) => set(i.id, 'rejected', decimalOnly(e.target.value))} /></td>
             <td className="py-1.5"><Input className="h-9 w-24" inputMode="decimal" aria-label={`Cost of ${i.name}`} value={rows[i.id].unitCost} onChange={(e) => set(i.id, 'unitCost', decimalOnly(e.target.value))} /></td>
+            <td className="py-1.5 pl-2"><Input className="h-9 w-28" maxLength={40} aria-label={`Batch number of ${i.name}`} value={rows[i.id].batchNo} onChange={(e) => set(i.id, 'batchNo', e.target.value)} /></td>
+            <td className="py-1.5 pl-2"><Input className="h-9 w-36" type="date" aria-label={`Expiry of ${i.name}`} value={rows[i.id].expiryDate} onChange={(e) => set(i.id, 'expiryDate', e.target.value)} /></td>
           </tr>))}</tbody>
       </table></div>
       <Field label="Supplier invoice no." className="mt-4"><Input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} /></Field>

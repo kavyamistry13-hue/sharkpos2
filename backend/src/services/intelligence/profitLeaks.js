@@ -9,22 +9,24 @@ const NET_PRICE = `(CASE WHEN p.price_includes_tax THEN p.selling_price * 100.0 
 
 async function profitLeaks({ days = 30, thinMarginPct = 8 } = {}) {
   const tz = config.storeTz;
+  // Share of the bill that was kept after partial returns (1 = nothing returned). Discounts and gross are scaled by it so a returned part does not count.
+  const KEPT = `(CASE WHEN s.total > 0 THEN GREATEST(1 - s.refund_amount / s.total, 0) ELSE 1 END)`;
   const win = `(s.created_at AT TIME ZONE $1)::date >= (now() AT TIME ZONE $1)::date - $2::int`;
   const [below, thin, realized, creep, disc, cashiers, estimated] = await Promise.all([
     // 1. Priced below cost right now (price excluding GST vs purchase price)
     query(`SELECT p.id, p.name, p.purchase_price, p.selling_price, ${NET_PRICE} AS net_price, p.stock
              FROM products p JOIN categories c ON c.id = p.category_id WHERE p.is_active AND ${NET_PRICE} < p.purchase_price ORDER BY (${NET_PRICE} - p.purchase_price)`),
     // 2. Thin but positive margin on things that actually sell
-    query(`SELECT p.id, p.name, p.purchase_price, ${NET_PRICE} AS net_price, COALESCE(SUM(si.quantity),0) AS units, COALESCE(SUM(COALESCE(si.taxable_value, si.total)),0) AS revenue
+    query(`SELECT p.id, p.name, p.purchase_price, ${NET_PRICE} AS net_price, COALESCE(SUM(si.quantity - si.returned_qty),0) AS units, COALESCE(SUM(COALESCE(si.taxable_value, si.total) * (si.quantity - si.returned_qty) / si.quantity),0) AS revenue
              FROM products p JOIN categories c ON c.id = p.category_id
-             JOIN sale_items si ON si.product_id = p.id JOIN sales s ON s.id = si.sale_id AND s.status = 'completed' AND ${win}
+             JOIN sale_items si ON si.product_id = p.id AND si.quantity > si.returned_qty JOIN sales s ON s.id = si.sale_id AND s.status = 'completed' AND ${win}
             WHERE p.is_active AND ${NET_PRICE} >= p.purchase_price AND p.purchase_price > 0 AND (${NET_PRICE} - p.purchase_price) * 100.0 / ${NET_PRICE} < $3
             GROUP BY p.id, c.tax_rate`, [tz, days, thinMarginPct]),
     // 3. Lines that were actually sold at a loss (snapshot cost; lines with an estimated cost are left out)
-    query(`SELECT p.id, p.name, COUNT(*)::int AS lines, SUM(si.quantity) AS units,
-                  SUM(si.unit_cost * si.quantity - COALESCE(si.taxable_value, si.total - si.discount_share)) AS loss, SUM(si.discount_share) AS discount
+    query(`SELECT p.id, p.name, COUNT(*)::int AS lines, SUM(si.quantity - si.returned_qty) AS units,
+                  SUM((si.unit_cost * si.quantity - COALESCE(si.taxable_value, si.total - si.discount_share)) * (si.quantity - si.returned_qty) / si.quantity) AS loss, SUM(si.discount_share * (si.quantity - si.returned_qty) / si.quantity) AS discount
              FROM sale_items si JOIN sales s ON s.id = si.sale_id AND s.status = 'completed' AND ${win} JOIN products p ON p.id = si.product_id
-            WHERE si.cost_source = 'snapshot' AND si.unit_cost * si.quantity > COALESCE(si.taxable_value, si.total - si.discount_share) + 0.005
+            WHERE si.cost_source = 'snapshot' AND si.quantity > si.returned_qty AND si.unit_cost * si.quantity > COALESCE(si.taxable_value, si.total - si.discount_share) + 0.005
             GROUP BY p.id ORDER BY loss DESC`, [tz, days]),
     // 4. Cost went up and the margin has not been repaired: latest vs previous cost
     query(`WITH ranked AS (SELECT product_id, cost, effective_at, ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY effective_at DESC, id DESC) rn FROM product_cost_history)
@@ -32,9 +34,9 @@ async function profitLeaks({ days = 30, thinMarginPct = 8 } = {}) {
              FROM ranked n JOIN ranked o ON o.product_id = n.product_id AND o.rn = 2 JOIN products p ON p.id = n.product_id JOIN categories c ON c.id = p.category_id
             WHERE n.rn = 1 AND p.is_active AND o.cost > 0 AND n.cost >= o.cost * 1.03 AND n.effective_at >= now() - ($1::int * interval '1 day')`, [Math.max(days, 30)]),
     // 5. Discount totals in the window
-    query(`SELECT COALESCE(SUM(s.discount),0) AS discount, COALESCE(SUM(s.subtotal),0) AS gross, COUNT(*) FILTER (WHERE s.discount > 0)::int AS discounted, COUNT(*)::int AS n
+    query(`SELECT COALESCE(SUM(s.discount * ${KEPT}),0) AS discount, COALESCE(SUM(s.subtotal * ${KEPT}),0) AS gross, COUNT(*) FILTER (WHERE s.discount > 0)::int AS discounted, COUNT(*)::int AS n
              FROM sales s WHERE s.status = 'completed' AND ${win}`, [tz, days]),
-    query(`SELECT u.id, u.name, COUNT(*)::int AS n, COALESCE(SUM(s.discount),0) AS discount, COALESCE(SUM(s.subtotal),0) AS gross
+    query(`SELECT u.id, u.name, COUNT(*)::int AS n, COALESCE(SUM(s.discount * ${KEPT}),0) AS discount, COALESCE(SUM(s.subtotal * ${KEPT}),0) AS gross
              FROM sales s JOIN users u ON u.id = s.employee_id WHERE s.status = 'completed' AND ${win} GROUP BY u.id, u.name`, [tz, days]),
     query(`SELECT COUNT(*)::int AS n FROM sale_items si JOIN sales s ON s.id = si.sale_id AND s.status = 'completed' AND ${win} WHERE si.cost_source <> 'snapshot'`, [tz, days]),
   ]);

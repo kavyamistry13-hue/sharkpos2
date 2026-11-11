@@ -34,7 +34,7 @@ async function listCustomers({ q, segment, sort = 'spending', page = 1, limit = 
   const res = await query(
     `SELECT c.id, c.name, c.phone, c.email, c.created_at,
             COUNT(s.id)::int AS orders,
-            COALESCE(SUM(s.total), 0) AS spending,
+            COALESCE(SUM(s.total - s.refund_amount), 0) AS spending,   -- net of partial returns: lifetime value counts only what the customer kept
             MAX(s.created_at) AS last_purchase,
             MIN(s.created_at) AS first_purchase,
             fav.category AS favorite_category
@@ -46,7 +46,7 @@ async function listCustomers({ q, segment, sort = 'spending', page = 1, limit = 
            JOIN sales s2 ON s2.id = si.sale_id AND s2.customer_id = c.id AND s2.status = 'completed'
            JOIN products p ON p.id = si.product_id
            JOIN categories cat ON cat.id = p.category_id
-          GROUP BY cat.name ORDER BY SUM(si.total) DESC LIMIT 1
+          GROUP BY cat.name ORDER BY SUM(si.total * (si.quantity - si.returned_qty) / si.quantity) DESC LIMIT 1
        ) fav ON TRUE
       GROUP BY c.id, fav.category
       ORDER BY c.id`,
@@ -97,17 +97,17 @@ async function getCustomer(id) {
   const c = all.rows.find((r) => r.id === id);
   if (!c) throw notFound('Customer not found.');
   const recent = await query(
-    `SELECT id, invoice_no, total, created_at FROM sales WHERE customer_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 8`,
+    `SELECT id, invoice_no, total, refund_amount, created_at FROM sales WHERE customer_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 8`,
     [id],
   );
   const cats = await query(
-    `SELECT cat.name, SUM(si.total) AS spend FROM sale_items si JOIN sales s ON s.id = si.sale_id AND s.customer_id = $1 AND s.status = 'completed'
+    `SELECT cat.name, SUM(si.total * (si.quantity - si.returned_qty) / si.quantity) AS spend FROM sale_items si JOIN sales s ON s.id = si.sale_id AND s.customer_id = $1 AND s.status = 'completed'
        JOIN products p ON p.id = si.product_id JOIN categories cat ON cat.id = p.category_id GROUP BY cat.name ORDER BY spend DESC LIMIT 4`,
     [id],
   );
   return {
     ...c,
-    recentOrders: recent.rows.map((r) => ({ id: r.id, invoiceNo: r.invoice_no, total: r.total, createdAt: r.created_at })),
+    recentOrders: recent.rows.map((r) => ({ id: r.id, invoiceNo: r.invoice_no, total: r.total, refundAmount: r.refund_amount, netTotal: Math.round((r.total - r.refund_amount) * 100) / 100, createdAt: r.created_at })),
     topCategories: cats.rows.map((r) => ({ name: r.name, spend: Math.round(r.spend * 100) / 100 })),
   };
 }

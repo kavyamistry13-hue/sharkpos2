@@ -1,5 +1,6 @@
 // POS sale lifecycle. Everything here is deterministic: pricing, discount authorisation, stock updates.
 const bcrypt = require('bcryptjs');
+const batches = require('./batches');
 const config = require('../config');
 const { query, withTransaction } = require('../db');
 const { computeBill } = require('./billing');
@@ -214,15 +215,20 @@ async function createSale(user, input, idempotencyKey) {
          VALUES ($1,$2,$3,$4,$5,$6,$7,'snapshot',$8,$9,$10,$11,$12)`,
         [saleId, line.productId, line.quantity, line.unitPrice, line.lineTotal, m.unit, m.unitCost, line.taxRate, line.priceIncludesTax, line.discountShare, line.taxableValue, line.tax],
       );
-      const upd = await client.query(`UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1`, [
+      const upd = await client.query(`UPDATE products SET stock = stock - $1 WHERE id = $2 AND stock >= $1 RETURNING stock, track_batches`, [
         line.quantity,
         line.productId,
       ]);
       if (!upd.rowCount) throw conflict(`Insufficient stock for ${line.name}.`);
-      await client.query(
-        `INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type) VALUES ($1,'sale',$2,$3,'sale')`,
-        [line.productId, -line.quantity, saleId],
-      );
+      // Batch-tracked products (Phase 9) sell earliest-expiry first and the movement records which batch; others are untouched.
+      const parts = upd.rows[0].track_batches ? await batches.deductFefo(client, line.productId, line.quantity, { stockAfter: Number(upd.rows[0].stock) }) : [];
+      const moves = parts.length ? parts.map((x) => ({ qty: x.quantity, batchId: x.batchId })) : [{ qty: line.quantity, batchId: null }];
+      for (const mv of moves) {
+        await client.query(
+          `INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type, batch_id) VALUES ($1,'sale',$2,$3,'sale',$4)`,
+          [line.productId, -mv.qty, saleId, mv.batchId],
+        );
+      }
     }
     await client.query('UPDATE sale_requests SET sale_id = $1 WHERE idempotency_key = $2', [saleId, idempotencyKey]);
     if (held) await client.query(`UPDATE held_bills SET status = 'completed', completed_sale_id = $2, completed_at = now(), version = version + 1 WHERE id = $1`, [held.id, saleId]);

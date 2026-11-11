@@ -28,7 +28,7 @@ async function getBaselines(q) {
               COALESCE(AVG(total), 0) AS total_mean,
               COALESCE(STDDEV_SAMP(total), 0) AS total_std,
               COALESCE(SUM(discount) / NULLIF(SUM(subtotal), 0), 0) AS disc_share,
-              COALESCE(AVG((status = 'refunded')::int), 0) AS refund_rate,
+              COALESCE(AVG((refund_amount > 0)::int), 0) AS refund_rate,   -- full or partial return
               COALESCE(AVG((status = 'cancelled')::int), 0) AS cancel_rate
          FROM sales
         WHERE created_at > now() - interval '90 days'`,
@@ -36,10 +36,10 @@ async function getBaselines(q) {
     q(
       `SELECT u.id, u.name, u.role,
               COUNT(s.id)::int AS n,
-              COALESCE(SUM(s.total) FILTER (WHERE s.status = 'completed'), 0) AS revenue,
+              COALESCE(SUM(s.total - s.refund_amount) FILTER (WHERE s.status = 'completed'), 0) AS revenue,   -- net of partial returns
               COALESCE(SUM(s.discount) FILTER (WHERE s.status <> 'cancelled'), 0) AS discount_total,
               COALESCE(SUM(s.subtotal) FILTER (WHERE s.status <> 'cancelled'), 0) AS subtotal_total,
-              COUNT(*) FILTER (WHERE s.status = 'refunded')::int AS refunds,
+              COUNT(*) FILTER (WHERE s.refund_amount > 0)::int AS refunds,
               COUNT(*) FILTER (WHERE s.status = 'cancelled')::int AS cancels,
               percentile_cont(0.25) WITHIN GROUP (ORDER BY s.discount) FILTER (WHERE s.discount > 0) AS disc_p25,
               percentile_cont(0.75) WITHIN GROUP (ORDER BY s.discount) FILTER (WHERE s.discount > 0) AS disc_p75,
@@ -131,7 +131,7 @@ function scoreSale(sale, baselines) {
   }
 
   // 4. Refund on this sale
-  if (sale.status === 'refunded' && sale.total > 0) {
+  if (sale.refundAmount > 0 && sale.total > 0) {
     const share = sale.refundAmount / sale.total;
     add(
       'refund_amount',
@@ -143,7 +143,7 @@ function scoreSale(sale, baselines) {
 
   // 5-6. Cashier behaviour
   if (emp && emp.n >= 20) {
-    if (sale.status === 'refunded' && emp.refunds >= 3 && emp.refundRate > Math.max(store.refundRate * 2, 0.01)) {
+    if (sale.refundAmount > 0 && emp.refunds >= 3 && emp.refundRate > Math.max(store.refundRate * 2, 0.01)) {
       add(
         'refund_frequency',
         'Frequent refunds',

@@ -379,6 +379,7 @@ sharkpos2/
 │   ├── architecture.md
 │   ├── PHASE_8_BARCODE.md
 │   ├── PHASE_8_1_SCAN_ADD.md
+│   ├── PHASE_9_INVENTORY_OPERATIONS.md
 │   ├── security.md
 │   ├── SECURITY_AUDIT_REPORT.md
 │   ├── DATA_PROTECTION_CHECKLIST.md
@@ -398,6 +399,7 @@ sharkpos2/
 | [`architecture.md`](docs/architecture.md) | System architecture |
 | [`PHASE_8_BARCODE.md`](docs/PHASE_8_BARCODE.md) | Barcode scanning |
 | [`PHASE_8_1_SCAN_ADD.md`](docs/PHASE_8_1_SCAN_ADD.md) | Scan & Add onboarding |
+| [`PHASE_9_INVENTORY_OPERATIONS.md`](docs/PHASE_9_INVENTORY_OPERATIONS.md) | Inventory & operations (reorder, batches/FEFO, counts, CSV) |
 | [`security.md`](docs/security.md) | Security architecture |
 | [`SECURITY_AUDIT_REPORT.md`](docs/SECURITY_AUDIT_REPORT.md) | Security audit |
 | [`DATA_PROTECTION_CHECKLIST.md`](docs/DATA_PROTECTION_CHECKLIST.md) | Data protection checklist |
@@ -432,8 +434,6 @@ Planned improvements include:
 - Improved mobile barcode scanning
 - More advanced AI forecasting
 - Automated product data enrichment
-- CSV/bulk product import
-- Advanced reporting for partial returns
 - MFA and password-reset improvements
 - Additional deployment and monitoring improvements
 - Production recovery rehearsals

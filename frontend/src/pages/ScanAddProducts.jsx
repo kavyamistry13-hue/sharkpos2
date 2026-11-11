@@ -29,7 +29,7 @@ export default function ScanAddProducts() {
   const [existing, setExisting] = useState(null);          // { code, id, matchedBy } — barcode already in this shop
   const [editing, setEditing] = useState(null);            // full product being edited through the normal editor
   const [notice, setNotice] = useState(null);
-  const remembered = useRef({ categoryId: '', unit: 'pcs' }); // the next product usually shares the shelf/unit of the last one
+  const remembered = useRef({ categoryId: '', unit: 'pcs', supplierId: '' }); // the next product usually shares the shelf/unit of the last one
   const busyStep = !!(form || existing || editing);
 
   /** A code arrived (camera, keyboard scanner or manual entry). Returns what the scanner should show. */
@@ -51,7 +51,7 @@ export default function ScanAddProducts() {
   useWedgeScanner(fromKeyboard, !busyStep);
 
   const saved = (p, code, body) => {
-    remembered.current = { categoryId: String(body.categoryId), unit: body.unit };
+    remembered.current = { categoryId: String(body.categoryId), unit: body.unit, supplierId: body.supplierId ? String(body.supplierId) : '' };   // never price or tax rate: tax follows the category, price is always typed
     setAdded((n) => n + 1);
     setLast({ name: p.name, price: p.sellingPrice, barcode: code });
     setForm(null);
@@ -101,10 +101,11 @@ export default function ScanAddProducts() {
 /** The product form for ONE scanned barcode. Quick mode first (the six fields that matter), everything else under "More details". */
 function ScanForm({ code, lookups, defaults, onCancel, onSaved, onExists }) {
   const cats = lookups.categories;
+  const sup0 = defaults.supplierId ? lookups.suppliers.find((x) => String(x.id) === defaults.supplierId) : null;   // last supplier used in this session
   const firstCat = defaults.categoryId || String((cats.find((c) => c.name.toLowerCase() === 'general') || cats[0] || {}).id || '');
   const [f, setF] = useState({
     name: '', categoryId: firstCat, sellingPrice: '', purchasePrice: '', stock: '', unit: defaults.unit || 'pcs',
-    sku: '', priceIncludesTax: true, minimumStock: '0', supplierId: '', leadTimeDays: '3', expiryDate: '',
+    sku: '', priceIncludesTax: true, minimumStock: '0', supplierId: sup0 ? String(sup0.id) : '', leadTimeDays: sup0 ? String(sup0.leadTimeDays) : '3', expiryDate: '',
   });
   const [more, setMore] = useState(false);
   const [errs, setErrs] = useState({});

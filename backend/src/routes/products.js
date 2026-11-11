@@ -20,6 +20,8 @@ const base = z.object({
   sellingPrice: z.coerce.number().min(0).max(1e6),
   stock: stockSchema.default(0),
   minimumStock: stockSchema.default(0),
+  maxStock: stockSchema.nullable().optional(),        // Phase 9: optional; NULL = no upper target
+  reorderLevel: stockSchema.nullable().optional(),    // Phase 9: optional; NULL = reorder at the minimum stock
   unit: z.enum(UNITS).default('pcs'),
   priceIncludesTax: z.boolean().default(false),
   supplierId: z.coerce.number().int().positive().nullable().optional(),
@@ -42,6 +44,7 @@ router.get(
     query: z.object({
       q: z.string().max(80).optional(), categoryId: optId, supplierId: optId,
       status: z.enum(['in_stock', 'low_stock', 'out_of_stock', 'expired']).optional(),
+      reorder: z.enum(['true']).transform(() => true).optional(), batch: z.enum(['yes', 'no']).optional(), expiry: z.enum(['expired', '7', '30', '90']).optional(), active: z.enum(['active', 'inactive']).optional(),
       sort: z.enum(['name', 'price', 'stock', 'category', 'sku', 'risk', 'margin']).default('name'),
       dir: z.enum(['asc', 'desc']).default('asc'),
       page: z.coerce.number().int().min(1).default(1),

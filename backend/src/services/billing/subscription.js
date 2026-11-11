@@ -79,14 +79,14 @@ async function getBilling(businessId) {
 }
 
 /** Throws PLAN_LIMIT when adding one more `kind` would exceed the plan. Call inside a business context. */
-async function assertWithinLimit(businessId, kind) {
+async function assertWithinLimit(businessId, kind, adding = 1) {
   const s = await getSubscription(businessId);
   if (!s) throw new HttpError(402, 'No subscription found for this business.', { code: 'SUBSCRIPTION_REQUIRED' });
   const limit = kind === 'users' ? s.features.maxUsers : kind === 'products' ? s.features.maxProducts : null;
   if (limit == null) return;
   const usage = await getUsage(businessId);
-  if (usage[kind] >= limit) {
-    throw new HttpError(403, `Your ${s.plan_name} plan allows up to ${limit} ${kind}. Upgrade your plan to add more.`, { code: 'PLAN_LIMIT', limit, kind, plan: s.plan_code });
+  if (usage[kind] + adding > limit) {
+    throw new HttpError(403, `Your ${s.plan_name} plan allows up to ${limit} ${kind}${adding > 1 ? ` (this would make ${usage[kind] + adding})` : ''}. Upgrade your plan to add more.`, { code: 'PLAN_LIMIT', limit, kind, plan: s.plan_code });
   }
 }
 

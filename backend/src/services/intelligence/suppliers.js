@@ -11,7 +11,7 @@ const pct = (a, b) => (b > 0 ? Math.round((a * 1000) / b) / 10 : null);
 async function supplierIntelligence({ days = 90 } = {}) {
   const tz = config.storeTz;
   const today = await todayLocal();
-  const [perSupplier, receivedPos, overdue, priceRows, quotes, bought, stats] = await Promise.all([
+  const [perSupplier, receivedPos, overdue, priceRows, quotes, bought, stats, extras, topBought] = await Promise.all([
     query(`SELECT s.id, s.name, COUNT(DISTINCT po.id)::int AS orders,
                   COALESCE(SUM(i.received_qty * i.unit_cost),0) AS spend,
                   COALESCE(SUM(i.ordered_qty) FILTER (WHERE po.status = 'received'),0) AS ordered_done, COALESCE(SUM(i.received_qty) FILTER (WHERE po.status = 'received'),0) AS received_done,
@@ -38,13 +38,26 @@ async function supplierIntelligence({ days = 90 } = {}) {
     query(`SELECT gi.product_id, COALESCE(SUM(gi.quantity),0) AS units
              FROM goods_receipt_items gi JOIN goods_receipts g ON g.id = gi.goods_receipt_id WHERE g.received_at >= now() - ($1::int * interval '1 day') GROUP BY 1`, [days]),
     getProductStats(),
+    // Phase 9: pending orders, last purchase and average cost per received unit, straight from the same purchase tables.
+    query(`SELECT po.supplier_id, COUNT(DISTINCT po.id) FILTER (WHERE po.status IN ('ordered','partially_received'))::int AS pending,
+                  MAX(po.ordered_at) FILTER (WHERE po.status IN ('ordered','partially_received','received')) AS last_purchase,
+                  COALESCE(SUM(i.received_qty * i.unit_cost) FILTER (WHERE po.status IN ('partially_received','received') AND po.ordered_at >= now() - ($1::int * interval '1 day')), 0) AS value_in,
+                  COALESCE(SUM(i.received_qty) FILTER (WHERE po.status IN ('partially_received','received') AND po.ordered_at >= now() - ($1::int * interval '1 day')), 0) AS units_in
+             FROM purchase_orders po LEFT JOIN purchase_order_items i ON i.purchase_order_id = po.id GROUP BY po.supplier_id`, [days]),
+    query(`SELECT DISTINCT ON (po.supplier_id) po.supplier_id, p.name AS product, SUM(i.received_qty) OVER (PARTITION BY po.supplier_id, i.product_id) AS units
+             FROM purchase_orders po JOIN purchase_order_items i ON i.purchase_order_id = po.id JOIN products p ON p.id = i.product_id
+            WHERE po.status IN ('partially_received','received') AND po.ordered_at >= now() - ($1::int * interval '1 day') AND i.received_qty > 0
+            ORDER BY po.supplier_id, SUM(i.received_qty) OVER (PARTITION BY po.supplier_id, i.product_id) DESC`, [days]),
   ]);
+  const extra = new Map(extras.rows.map((r) => [r.supplier_id, r]));
+  const top = new Map(topBought.rows.map((r) => [r.supplier_id, r]));
 
   const onTime = new Map(receivedPos.rows.map((r) => [r.supplier_id, r]));
   const suppliers = perSupplier.rows.map((r) => {
     const t = onTime.get(r.id) || { n: 0, on_time: 0 };
     const enough = t.n >= MIN_SAMPLE;
-    return { supplierId: r.id, name: r.name, orders: r.orders, completedOrders: t.n, spend: r2(r.spend), onTimePct: pct(t.on_time, t.n), fillRatePct: pct(r.received_done, r.ordered_done), rejectionPct: pct(r.rejected, r.rejected + r.received_all), enoughData: enough, note: enough ? null : `Only ${t.n} completed order${t.n === 1 ? '' : 's'} so far — not enough to judge delivery (needs ${MIN_SAMPLE}).` };
+    const x = extra.get(r.id) || {}; const tp = top.get(r.id);
+    return { pendingOrders: x.pending || 0, lastPurchase: x.last_purchase || null, avgUnitCost: Number(x.units_in) > 0 ? r2(Number(x.value_in) / Number(x.units_in)) : null, mostPurchased: tp ? { product: tp.product, units: Number(tp.units) } : null, supplierId: r.id, name: r.name, orders: r.orders, completedOrders: t.n, spend: r2(r.spend), onTimePct: pct(t.on_time, t.n), fillRatePct: pct(r.received_done, r.ordered_done), rejectionPct: pct(r.rejected, r.rejected + r.received_all), enoughData: enough, note: enough ? null : `Only ${t.n} completed order${t.n === 1 ? '' : 's'} so far — not enough to judge delivery (needs ${MIN_SAMPLE}).` };
   });
 
   const actions = [];

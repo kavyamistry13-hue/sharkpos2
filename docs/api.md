@@ -110,3 +110,17 @@ All money-moving calls need an `Idempotency-Key: <uuid>` header (400 `IDEMPOTENC
 | POST | /held-bills/:id/discard | O,M,C | Idempotent. 409 if already completed. |
 | POST | /held-bills/:id/complete | O,M,C | Sells the server-side cart via the normal sale path. Needs key. 409 `HELD_BILL_NOT_OPEN` if it was already completed/discarded. |
 | GET | /intelligence/owner-today | O,M | Owner Today: `business`, `needsAttention`, `forecast`, `recommendations` (the Action Center list), `health`, `value`, `kinds`. Read-only. |
+
+## Phase 9 additions (inventory & operations) — O = owner, M = manager
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| GET | /inventory?filter=&categoryId=&supplierId= | O,M | Filters: `low`, `reorder`, `expired`, `expiring7/30/90`, `batch`, `nobatch`. Overview totals include cost/selling value, `needReorder`, `last7Days`. |
+| GET | /inventory/reorder | O,M | Recommendation only (never creates a PO): `suggestedReorderQty`, supplier, on-order qty. |
+| POST | /inventory/adjust | O,M | `{productId, delta\|newQty, reason, note?, batchId?}`; reason enum; 409 if it would go negative. |
+| GET | /inventory/timeline | O,M | Paged movement feed (`stockAfter`, reason, batch). |
+| GET | /inventory/expiry, /inventory/batches, /inventory/:productId/batches | O,M | Batch / expiry reports. POST on `/:productId/batches` adds a batch (opening stock). |
+| * | /stock-counts (+ `/:id/items`, `/submit`, `/approve`, `/cancel`) | O,M | Count -> review -> approve. Only approve changes stock (409 `COUNT_STALE`, `COUNT_ALREADY_OPEN`). |
+| POST | /products/import/validate, /preview, /import | O,M | Body `text/csv`. All-or-nothing; 422 `IMPORT_INVALID` with row errors. Limits: 5 MB / 5,000 rows. |
+| GET | /exports/:kind.csv | O,M (sales, customers: O) | Column allowlists, formula-injection safe, 50,000-row cap. |
+| PUT/POST | /products (`maxStock`, `reorderLevel`) | O,M | Optional; `max >= minimum`. |
+| POST | /purchase-orders/:id/receive | O,M | Lines accept optional `batchNo`, `manufacturedDate`, `expiryDate`. |

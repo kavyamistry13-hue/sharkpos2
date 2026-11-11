@@ -47,11 +47,14 @@ function createApp() {
   app.use('/api/audit', require('./routes/audit'));
   app.use('/api', subscriptionGate);
   app.use('/api/billing', require('./routes/billing'));
+  app.use('/api/products', require('./routes/productImport'));   // Phase 9: /import/*
   app.use('/api/products', require('./routes/barcodes'));   // Phase 8: /scan, /quick-create, /:id/barcodes (must come before the products router)
   app.use('/api/products', require('./routes/products'));
   app.use('/api/sales', require('./routes/sales'));
   app.use('/api/held-bills', require('./routes/heldBills'));
   app.use('/api/inventory', require('./routes/inventory'));
+  app.use('/api/stock-counts', require('./routes/stockCounts'));
+  app.use('/api/exports', require('./routes/exports'));
   app.use('/api/categories', require('./routes/categories'));
   app.use('/api/suppliers', require('./routes/suppliers'));
   app.use('/api/purchase-orders', require('./routes/purchaseOrders'));

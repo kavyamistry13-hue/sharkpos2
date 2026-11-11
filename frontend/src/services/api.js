@@ -90,3 +90,31 @@ export const api = {
   put: (p, body) => request('PUT', p, { body }),
   del: (p) => request('DELETE', p),
 };
+
+// CSV helpers (Phase 9). Same auth + silent-refresh behaviour as every other call; errors become the same friendly ApiError.
+async function csvFetch(method, path, { text, params } = {}) {
+  const run = () => fetch(`${API_BASE}/api${path}${params ? '?' + new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== '')).toString() : ''}`, {
+    method, credentials: CREDENTIALS,
+    headers: { ...(text !== undefined ? { 'content-type': 'text/csv' } : {}), ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}) },
+    body: text,
+  });
+  let res;
+  try { res = await run(); if (res.status === 401) { const renewed = await refreshSession(); if (renewed) res = await run(); } } catch { throw new ApiError('Cannot reach the server. Check your connection and try again.', 0); }
+  return res;
+}
+/** Sends CSV text (preview or import). Resolves with the JSON body; failures throw ApiError carrying `details` (row-level errors). */
+export async function uploadCsv(path, text) {
+  const res = await csvFetch('POST', path, { text });
+  let data = null; try { data = await res.json(); } catch { /* empty */ }
+  if (!res.ok) throw new ApiError(res.status >= 500 ? GENERIC : (data && data.error) || GENERIC, res.status, data && data.details);
+  return data;
+}
+/** Downloads a CSV through the browser (Save-as) using the authenticated session. */
+export async function downloadCsv(path, fallbackName) {
+  const res = await csvFetch('GET', path);
+  if (!res.ok) { let d = null; try { d = await res.json(); } catch { /* */ } throw new ApiError(res.status >= 500 ? GENERIC : (d && d.error) || GENERIC, res.status); }
+  const m = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') || '');
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a'); a.href = url; a.download = m ? m[1] : fallbackName; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}

@@ -14,6 +14,7 @@ const credit = require('../credit');
 const metrics = require('../measurement/metrics');
 const ledger = require('../measurement/ledger');
 const { getProductStats } = require('../forecast');
+const batches = require('../batches');
 
 const KINDS = {
   actual: 'Counted from your own records.',
@@ -28,7 +29,7 @@ async function ownerToday({ top = 5 } = {}) {
   const yesterday = addDays(today, -1);
   const safe = async (label, fn, fallback) => { try { return await fn(); } catch (err) { console.error(`[owner-today] ${label} failed:`, err.message); return fallback; } };
   const warnings = [];
-  const [a, y, cust, ac, list, cr, recon, shiftVar, stats, health, value] = await Promise.all([
+  const [a, y, cust, ac, list, cr, recon, shiftVar, stats, health, value, expiredRep, pendingPo] = await Promise.all([
     activity(query, { ...dayPredicates, params: [tz, today] }),
     activity(query, { ...dayPredicates, params: [tz, yesterday] }),
     query(`SELECT COUNT(DISTINCT s.customer_id)::int AS known, COUNT(*) FILTER (WHERE s.customer_id IS NULL)::int AS walkin
@@ -42,6 +43,9 @@ async function ownerToday({ top = 5 } = {}) {
     safe('stats', () => getProductStats(), []),
     safe('health', () => metrics.storeHealth(), null),
     safe('value', () => ledger.valueSummary({ days: 90 }), null),
+    safe('expired', () => batches.expiryReport('expired', 200), { rows: [], counts: { expired: 0 } }),
+    safe('purchases', async () => (await query(`SELECT po.po_number, po.status, s.name AS supplier FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id
+                                                  WHERE po.status IN ('ordered','partially_received') ORDER BY po.id LIMIT 50`)).rows, []),
   ]);
   if (!cr) warnings.push('Could not read udhaar right now.');
   if (!health) warnings.push('Could not compute Store Health right now.');
@@ -58,7 +62,13 @@ async function ownerToday({ top = 5 } = {}) {
     ...recon.rows.map((r) => ({ when: r.date, who: 'Day count', variance: r.variance })),
     ...shiftVar.rows.map((r) => ({ when: r.date, who: `${r.cashier}'s shift`, variance: r.variance, shiftId: r.id })),
   ];
+  // Phase 9: counts straight from the stock rules (reorder level / batches / open purchase orders). Recommendations only — nothing is ordered here.
+  const needRestock = stats.filter((p) => p.needsReorder);
+  const expiredRows = expiredRep.rows;
   const attn = [
+    { key: 'restock', label: 'Products to restock', kind: 'actual', count: needRestock.length, severity: needRestock.length ? 'medium' : null, detail: needRestock.length ? `${needRestock.length} product${needRestock.length === 1 ? '' : 's'} need restocking (at or below the reorder level).` : 'Nothing is below its reorder level.', items: needRestock.slice(0, 3).map((p) => `${p.name}: ${p.stock} left, suggested order ${p.suggestedReorderQty}`), to: '/inventory?view=reorder' },
+    { key: 'expired', label: 'Expired stock', kind: 'actual', count: expiredRows.length, severity: expiredRows.length ? 'high' : null, detail: expiredRows.length ? `${expiredRows.length} expired batch/product line${expiredRows.length === 1 ? '' : 's'} (₹${sum(expiredRows.map((r) => ({ amount: r.atRiskValue })))} at cost). Remove with an "expired" stock adjustment.` : 'Nothing has expired.', items: expiredRows.slice(0, 3).map((r) => `${r.name}${r.batchNo ? ` · batch ${r.batchNo}` : ''}: ${r.quantity} ${r.unit}`), to: '/inventory?view=expiry' },
+    { key: 'purchases', label: 'Purchases awaiting receiving', kind: 'actual', count: pendingPo.length, severity: pendingPo.length ? 'low' : null, detail: pendingPo.length ? `${pendingPo.length} order${pendingPo.length === 1 ? '' : 's'} not fully received${pendingPo[0].po_number ? ` — ${pendingPo[0].po_number} (${pendingPo[0].supplier}) is the oldest` : ''}.` : 'No orders are waiting to be received.', to: '/purchasing' },
     { key: 'critical_stock', label: 'Critical stock', kind: 'actual', count: critical.length, severity: worst(critical), detail: critical.length ? `${critical.filter((x) => x.severity === 'critical').length} out of stock, ${critical.filter((x) => x.severity === 'high').length} about to run out.` : 'Nothing is out of stock or about to run out.', items: critical.slice(0, 3).map((x) => x.title), to: '/inventory' },
     { key: 'expiring', label: 'Expiring items', kind: 'actual', count: expiring.length, severity: worst(expiring), detail: expiring.length ? `₹${sum(expiring)} of stock expired or expiring within 7 days.` : 'Nothing is expiring this week.', items: expiring.slice(0, 3).map((x) => x.title), to: '/inventory' },
     { key: 'credit', label: 'Outstanding credit (udhaar)', kind: 'actual', count: cr ? cr.debtors : 0, severity: cr && cr.overdueCustomers ? 'medium' : null, detail: cr ? (cr.outstanding > 0 ? `₹${cr.outstanding} owed by ${cr.debtors} customer(s); ₹${cr.overdueAmount} is more than ${cr.overdueDays} days old.` : 'Nobody owes you anything.') : 'Unavailable.', items: cr ? cr.top.slice(0, 3).map((t) => `${t.name} · ₹${t.balance}`) : [], amount: cr ? cr.outstanding : 0, to: '/udhaar' },
@@ -66,6 +76,8 @@ async function ownerToday({ top = 5 } = {}) {
     { key: 'suppliers', label: 'Supplier issues', kind: 'actual', count: suppliers.length, severity: worst(suppliers), detail: suppliers.length ? suppliers[0].title : 'No supplier problems found.', items: suppliers.slice(0, 3).map((x) => x.title), to: '/purchasing' },
     { key: 'cash', label: 'Cash differences (last 7 days)', kind: 'actual', count: cashDiffs.length, severity: cashDiffs.length ? 'medium' : null, detail: cashDiffs.length ? `${cashDiffs.length} count(s) did not match. Latest: ${cashDiffs[0].who} on ${cashDiffs[0].when}, ${cashDiffs[0].variance < 0 ? 'short' : 'over'} ₹${Math.abs(cashDiffs[0].variance)}.` : 'Every counted drawer matched.', items: cashDiffs.slice(0, 3).map((d) => `${d.who} · ${d.when} · ₹${d.variance}`), to: '/closing' },
   ].map((x) => ({ ...x, needsAction: x.count > 0 && x.severity !== null || (x.key === 'credit' && x.count > 0) }));
+  const ORDER = ['critical_stock', 'restock', 'expiring', 'expired', 'credit', 'unusual', 'suppliers', 'purchases', 'cash'];
+  attn.sort((a, b) => ORDER.indexOf(a.key) - ORDER.indexOf(b.key));
 
   const atRisk = stats.filter((p) => p.riskLevel === 'high' && !p.outOfStock);
   const t = a.sales;

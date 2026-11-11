@@ -5,6 +5,7 @@
 //   rejected_qty  what arrived but was refused: NOT added to stock, and still counts as outstanding
 // Receiving adds stock, writes inventory movements, records the actual invoiced cost in product cost history and supplier price history.
 const config = require('../config');
+const batches = require('./batches');
 const { query, withTransaction } = require('../db');
 const { HttpError, badRequest, conflict, notFound } = require('../utils/errors');
 const { invalidateAll } = require('../utils/cache');
@@ -255,7 +256,7 @@ async function receive(id, user, input, idempotencyKey) {
       assertQuantity(it.unit, rej, 'Rejected quantity', it.name);
       const outstanding = round3(it.ordered_qty - it.received_qty);
       if (q > outstanding) throw conflict(`Only ${outstanding} ${it.unit} of ${it.name} are still to be received (you entered ${q}).`, { code: 'OVER_RECEIPT', itemId: it.id, outstanding });
-      lines.push({ it, q, rej, cost: l.unitCost !== undefined ? Number(l.unitCost) : Number(it.unit_cost) });
+      lines.push({ it, q, rej, cost: l.unitCost !== undefined ? Number(l.unitCost) : Number(it.unit_cost), batchNo: l.batchNo || null, manufacturedDate: l.manufacturedDate || null, expiryDate: l.expiryDate || null });
     }
     if (!lines.length) throw badRequest('Enter a received or rejected quantity for at least one item.');
 
@@ -265,15 +266,17 @@ async function receive(id, user, input, idempotencyKey) {
     );
     const receiptId = rc.rows[0].id;
     const priceChanges = [];
-    for (const { it, q, rej, cost } of lines) {
+    for (const { it, q, rej, cost, batchNo, manufacturedDate, expiryDate } of lines) {
       await client.query('UPDATE purchase_order_items SET received_qty = received_qty + $1, rejected_qty = rejected_qty + $2 WHERE id = $3', [q, rej, it.id]);
-      await client.query('INSERT INTO goods_receipt_items (goods_receipt_id, purchase_order_item_id, product_id, quantity, rejected_quantity, unit_cost) VALUES ($1,$2,$3,$4,$5,$6)', [receiptId, it.id, it.product_id, q, rej, cost]);
+      await client.query('INSERT INTO goods_receipt_items (goods_receipt_id, purchase_order_item_id, product_id, quantity, rejected_quantity, unit_cost, batch_no, manufactured_date, expiry_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)', [receiptId, it.id, it.product_id, q, rej, cost, batchNo, manufacturedDate, expiryDate]);
       if (q <= 0) continue;
       const p = (await client.query(
         `SELECT p.purchase_price, p.selling_price, p.price_includes_tax, c.tax_rate FROM products p JOIN categories c ON c.id = p.category_id WHERE p.id = $1 FOR UPDATE OF p`, [it.product_id],
       )).rows[0];
       await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2', [q, it.product_id]);
-      await client.query(`INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type, created_by) VALUES ($1,'restock',$2,$3,'goods_receipt',$4)`, [it.product_id, q, receiptId, user.id]);
+      // Optional batch / expiry captured at receiving (Phase 9). Without them nothing changes for the product.
+      const batch = batchNo || expiryDate ? await batches.addToBatch(client, { productId: it.product_id, batchNo, manufacturedDate, expiryDate, quantity: q, unitCost: cost, supplierId: po.supplier_id, receiptId, userId: user.id }) : null;
+      await client.query(`INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type, created_by, batch_id) VALUES ($1,'restock',$2,$3,'goods_receipt',$4,$5)`, [it.product_id, q, receiptId, user.id, batch ? batch.id : null]);
       if (Number(p.purchase_price) !== cost) {
         await client.query('UPDATE products SET purchase_price = $1 WHERE id = $2', [cost, it.product_id]);
         await client.query(`INSERT INTO product_cost_history (product_id, cost, source, ref_type, ref_id, created_by) VALUES ($1,$2,'purchase','goods_receipt',$3,$4)`, [it.product_id, cost, receiptId, user.id]);

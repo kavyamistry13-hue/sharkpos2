@@ -11,9 +11,9 @@ async function listEmployees(days = 30) {
   const res = await query(
     `SELECT u.id, u.name, u.email, u.role, u.is_active, u.created_at,
             COUNT(s.id) FILTER (WHERE s.status <> 'cancelled')::int AS transactions,
-            COALESCE(SUM(s.total) FILTER (WHERE s.status = 'completed'), 0) AS revenue,
+            COALESCE(SUM(s.total - s.refund_amount) FILTER (WHERE s.status = 'completed'), 0) AS revenue,   -- net of partial returns
             COALESCE(SUM(s.discount) FILTER (WHERE s.status <> 'cancelled'), 0) AS discounts,
-            COUNT(s.id) FILTER (WHERE s.status = 'refunded')::int AS refunds,
+            COUNT(s.id) FILTER (WHERE s.refund_amount > 0)::int AS refunds,   -- any sale with money returned, full or partial
             COUNT(s.id) FILTER (WHERE s.status = 'cancelled')::int AS cancellations,
             COUNT(a.id) FILTER (WHERE a.status = 'open')::int AS open_alerts
        FROM users u
