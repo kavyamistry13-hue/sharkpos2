@@ -10,6 +10,7 @@ const { badRequest, notFound, conflict } = require('../utils/errors');
 const { invalidateAll } = require('../utils/cache');
 const { assertQuantity, round3 } = require('../utils/units');
 const batches = require('./batches');
+const costing = require('./costing');
 
 const REASONS = ['damaged', 'expired', 'lost', 'theft', 'counting_error', 'found_stock', 'manual_correction', 'other'];
 const LOSS_REASONS = new Set(['damaged', 'expired', 'lost', 'theft']);   // can only take stock away
@@ -60,6 +61,8 @@ async function addBatchStock(productId, { quantity, batchNo, manufacturedDate, e
     if (!p) throw notFound('Product not found.');
     assertQuantity(p.unit, quantity, 'Quantity');
     const b = await batches.addToBatch(client, { productId, batchNo, manufacturedDate, expiryDate, quantity, unitCost, userId });
+    // Opening stock that comes with a cost is a purchase-like inflow: it joins the weighted average. Without a cost it enters at the current average.
+    if (unitCost != null) await costing.receive(client, { productId, quantity, unitCost, source: 'batch', refType: 'stock_batch', refId: b.id, userId });
     const r = await applyAdjustment(client, { productId, delta: quantity, reason: 'manual_correction', note: `Batch ${b.batchNo}`, userId, batchId: b.id });
     return { ...r, batchId: b.id, batchNo: b.batchNo };
   });
@@ -154,13 +157,13 @@ async function recordItem(countId, productId, countedQty, userId) {
   await withTransaction(async (client) => {
     const c = await loadCount(client, countId, true);
     if (c.status !== 'counting') throw conflict(`This count is ${c.status} — items can no longer be changed.`, { code: 'COUNT_NOT_OPEN' });
-    const p = (await client.query('SELECT name, unit, stock, purchase_price FROM products WHERE id = $1 AND is_active = TRUE', [productId])).rows[0];
+    const p = (await client.query('SELECT name, unit, stock, avg_cost FROM products WHERE id = $1 AND is_active = TRUE', [productId])).rows[0];
     if (!p) throw notFound('Product not found.');
     assertQuantity(p.unit, countedQty, 'Counted quantity', p.name);
     await client.query(
       `INSERT INTO stock_count_items (stock_count_id, product_id, expected_qty, counted_qty, unit_cost, counted_by) VALUES ($1,$2,$3,$4,$5,$6)
        ON CONFLICT (business_id, stock_count_id, product_id) DO UPDATE SET counted_qty = EXCLUDED.counted_qty, counted_by = EXCLUDED.counted_by`,
-      [countId, productId, p.stock, countedQty, p.purchase_price, userId],
+      [countId, productId, p.stock, countedQty, p.avg_cost, userId],
     );
   });
   return getCount(countId);

@@ -7,6 +7,7 @@ const { currentBusinessId } = require('../db');
 const { assertQuantity, isDecimalUnit } = require('../utils/units');
 const barcodes = require('./barcodes');
 const batches = require('./batches');
+const costing = require('./costing');
 const crypto = require('crypto');
 
 const SORTS = {
@@ -58,10 +59,10 @@ async function listInactive(f) {
   const total = (await query(`SELECT COUNT(*)::int AS n FROM products p WHERE ${where.join(' AND ')}`, params)).rows[0].n;
   params.push(f.limit, (f.page - 1) * f.limit);
   const rows = (await query(
-    `SELECT p.id, p.sku, p.name, p.unit, p.stock, p.purchase_price, p.selling_price, c.name AS category, s.name AS supplier
+    `SELECT p.id, p.sku, p.name, p.unit, p.stock, p.purchase_price, p.avg_cost, p.selling_price, c.name AS category, s.name AS supplier
        FROM products p JOIN categories c ON c.id = p.category_id LEFT JOIN suppliers s ON s.id = p.supplier_id
       WHERE ${where.join(' AND ')} ORDER BY p.name LIMIT $${params.length - 1} OFFSET $${params.length}`, params)).rows;
-  return { total, page: f.page, limit: f.limit, rows: rows.map((r) => ({ id: r.id, sku: r.sku, name: r.name, unit: r.unit, stock: Number(r.stock), purchasePrice: r.purchase_price, sellingPrice: r.selling_price, category: r.category, supplier: r.supplier, isActive: false, status: 'inactive', barcodes: [] })) };
+  return { total, page: f.page, limit: f.limit, rows: rows.map((r) => ({ id: r.id, sku: r.sku, name: r.name, unit: r.unit, stock: Number(r.stock), purchasePrice: r.purchase_price, avgCost: r.avg_cost, sellingPrice: r.selling_price, category: r.category, supplier: r.supplier, isActive: false, status: 'inactive', barcodes: [] })) };
 }
 
 async function getLookups() {
@@ -100,7 +101,7 @@ async function createProductTx(client, input, userId) {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
     [sku, input.name, input.categoryId, input.purchasePrice, input.sellingPrice, input.stock, input.minimumStock, input.supplierId || null, input.leadTimeDays, input.expiryDate || null, unit, Boolean(input.priceIncludesTax), input.maxStock ?? null, input.reorderLevel ?? null],
   );
-  await client.query(`INSERT INTO product_cost_history (product_id, cost, source, created_by) VALUES ($1,$2,'initial',$3)`, [res.rows[0].id, input.purchasePrice, userId]);
+  await client.query(`INSERT INTO product_cost_history (product_id, cost, source, created_by, prev_avg_cost, new_avg_cost, qty_before, qty_received, qty_after) VALUES ($1,$2,'initial',$3,NULL,$2,0,$4,$4)`, [res.rows[0].id, input.purchasePrice, userId, input.stock]);
   if (input.stock > 0) {
     await client.query(`INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type) VALUES ($1,'initial',$2,$3,NULL)`, [res.rows[0].id, input.stock, userId]);
   }
@@ -165,6 +166,8 @@ async function updateProduct(id, input, userId) {
       await client.query(`INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id) VALUES ($1,'adjustment',$2,$3)`, [id, Math.round((input.stock - cur.stock) * 1000) / 1000, userId]);
     }
     if (input.purchasePrice !== undefined && Number(input.purchasePrice) !== Number(cur.purchase_price)) {
+      // purchase_price is the expected/latest supplier price. Editing it records the change (as before) but NEVER touches avg_cost: the average moves
+      // only through real inventory cost events (goods receipts, restocked returns, batch stock with a cost). The average/quantity columns stay NULL.
       await client.query(`INSERT INTO product_cost_history (product_id, cost, source, created_by) VALUES ($1,$2,'manual',$3)`, [id, input.purchasePrice, userId]);
     }
   });
@@ -214,12 +217,12 @@ async function searchForPos(q, limit = 24) {
 async function getCostHistory(productId, limit = 100) {
   if (!(await query('SELECT 1 FROM products WHERE id = $1', [productId])).rowCount) throw notFound('Product not found.');
   const res = await query(
-    `SELECT h.id, h.cost, h.effective_at, h.source, h.ref_type, h.ref_id, a.name AS created_by
+    `SELECT h.id, h.cost, h.effective_at, h.source, h.ref_type, h.ref_id, a.name AS created_by, h.prev_avg_cost, h.new_avg_cost, h.qty_before, h.qty_received, h.qty_after
        FROM product_cost_history h LEFT JOIN users a ON a.id = h.created_by
       WHERE h.product_id = $1 ORDER BY h.effective_at DESC, h.id DESC LIMIT $2`,
     [productId, limit],
   );
-  return res.rows.map((r) => ({ id: r.id, cost: r.cost, effectiveAt: r.effective_at, source: r.source, refType: r.ref_type, refId: r.ref_id, createdBy: r.created_by }));
+  return res.rows.map((r) => ({ id: r.id, cost: r.cost, effectiveAt: r.effective_at, source: r.source, refType: r.ref_type, refId: r.ref_id, createdBy: r.created_by, prevAvgCost: r.prev_avg_cost, newAvgCost: r.new_avg_cost, qtyBefore: r.qty_before, qtyReceived: r.qty_received, qtyAfter: r.qty_after }));
 }
 
 async function getProductSuppliers(productId) {

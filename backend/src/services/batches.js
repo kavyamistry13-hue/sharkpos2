@@ -82,11 +82,11 @@ async function expiryReport(within = 'all', limit = 500) {
   const cond = within === 'expired' ? `d < 0` : within === 'all' ? 'TRUE' : `d BETWEEN 0 AND ${Number(within)}`;
   const rows = (await query(
     `SELECT * FROM (
-       SELECT 'batch' AS source, b.id AS batch_id, p.id AS product_id, p.name, p.sku, p.unit, b.batch_no, b.expiry_date, b.quantity_on_hand AS qty, p.purchase_price AS cost, (b.expiry_date - ${TODAY}) AS d
+       SELECT 'batch' AS source, b.id AS batch_id, p.id AS product_id, p.name, p.sku, p.unit, b.batch_no, b.expiry_date, b.quantity_on_hand AS qty, p.avg_cost AS cost, (b.expiry_date - ${TODAY}) AS d
          FROM stock_batches b JOIN products p ON p.business_id = b.business_id AND p.id = b.product_id
         WHERE b.quantity_on_hand > 0 AND b.expiry_date IS NOT NULL AND p.is_active
        UNION ALL
-       SELECT 'product', NULL, p.id, p.name, p.sku, p.unit, NULL, p.expiry_date, p.stock, p.purchase_price, (p.expiry_date - ${TODAY})
+       SELECT 'product', NULL, p.id, p.name, p.sku, p.unit, NULL, p.expiry_date, p.stock, p.avg_cost, (p.expiry_date - ${TODAY})
          FROM products p WHERE p.is_active AND p.expiry_date IS NOT NULL AND p.stock > 0 AND NOT EXISTS (SELECT 1 FROM stock_batches b WHERE b.product_id = p.id AND b.quantity_on_hand > 0)
      ) x WHERE ${cond} ORDER BY d, name LIMIT $1`, [limit])).rows;
   const out = rows.map((r) => ({ source: r.source, batchId: r.batch_id, productId: r.product_id, name: r.name, sku: r.sku, unit: r.unit, batchNo: r.batch_no, expiryDate: iso(r.expiry_date), quantity: Number(r.qty), daysToExpiry: Number(r.d), atRiskValue: Math.round(Number(r.qty) * Number(r.cost) * 100) / 100 }));

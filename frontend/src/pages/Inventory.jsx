@@ -178,7 +178,7 @@ export default function Inventory() {
       {s && (
         <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" data-testid="inventory-overview">
           <Stat label="Products" value={num(s.totalProducts)} sub={`${num(s.totalUnits)} units in stock`} />
-          <Stat label="Stock value (cost)" value={inr(s.costValue)} />
+          <Stat label="Stock value (cost)" value={inr(s.costValue)} sub="at average cost" />
           <Stat label="Stock value (selling)" value={inr(s.sellingValue)} sub="at today's prices" />
           <Stat label="Need restocking" value={s.needReorder} tone={s.needReorder ? 'warn' : 'ok'} sub={s.needReorder ? 'see Reorder' : 'all good'} />
           <Stat label="Sold, last 7 days" value={num(s.last7Days.soldUnits)} sub="units" />

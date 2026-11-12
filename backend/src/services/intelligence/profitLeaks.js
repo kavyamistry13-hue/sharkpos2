@@ -14,13 +14,13 @@ async function profitLeaks({ days = 30, thinMarginPct = 8 } = {}) {
   const win = `(s.created_at AT TIME ZONE $1)::date >= (now() AT TIME ZONE $1)::date - $2::int`;
   const [below, thin, realized, creep, disc, cashiers, estimated] = await Promise.all([
     // 1. Priced below cost right now (price excluding GST vs purchase price)
-    query(`SELECT p.id, p.name, p.purchase_price, p.selling_price, ${NET_PRICE} AS net_price, p.stock
-             FROM products p JOIN categories c ON c.id = p.category_id WHERE p.is_active AND ${NET_PRICE} < p.purchase_price ORDER BY (${NET_PRICE} - p.purchase_price)`),
+    query(`SELECT p.id, p.name, p.avg_cost, p.selling_price, ${NET_PRICE} AS net_price, p.stock
+             FROM products p JOIN categories c ON c.id = p.category_id WHERE p.is_active AND ${NET_PRICE} < p.avg_cost ORDER BY (${NET_PRICE} - p.avg_cost)`),
     // 2. Thin but positive margin on things that actually sell
-    query(`SELECT p.id, p.name, p.purchase_price, ${NET_PRICE} AS net_price, COALESCE(SUM(si.quantity - si.returned_qty),0) AS units, COALESCE(SUM(COALESCE(si.taxable_value, si.total) * (si.quantity - si.returned_qty) / si.quantity),0) AS revenue
+    query(`SELECT p.id, p.name, p.avg_cost, ${NET_PRICE} AS net_price, COALESCE(SUM(si.quantity - si.returned_qty),0) AS units, COALESCE(SUM(COALESCE(si.taxable_value, si.total) * (si.quantity - si.returned_qty) / si.quantity),0) AS revenue
              FROM products p JOIN categories c ON c.id = p.category_id
              JOIN sale_items si ON si.product_id = p.id AND si.quantity > si.returned_qty JOIN sales s ON s.id = si.sale_id AND s.status = 'completed' AND ${win}
-            WHERE p.is_active AND ${NET_PRICE} >= p.purchase_price AND p.purchase_price > 0 AND (${NET_PRICE} - p.purchase_price) * 100.0 / ${NET_PRICE} < $3
+            WHERE p.is_active AND ${NET_PRICE} >= p.avg_cost AND p.avg_cost > 0 AND (${NET_PRICE} - p.avg_cost) * 100.0 / ${NET_PRICE} < $3
             GROUP BY p.id, c.tax_rate`, [tz, days, thinMarginPct]),
     // 3. Lines that were actually sold at a loss (snapshot cost; lines with an estimated cost are left out)
     query(`SELECT p.id, p.name, COUNT(*)::int AS lines, SUM(si.quantity - si.returned_qty) AS units,
@@ -29,7 +29,7 @@ async function profitLeaks({ days = 30, thinMarginPct = 8 } = {}) {
             WHERE si.cost_source = 'snapshot' AND si.quantity > si.returned_qty AND si.unit_cost * si.quantity > COALESCE(si.taxable_value, si.total - si.discount_share) + 0.005
             GROUP BY p.id ORDER BY loss DESC`, [tz, days]),
     // 4. Cost went up and the margin has not been repaired: latest vs previous cost
-    query(`WITH ranked AS (SELECT product_id, cost, effective_at, ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY effective_at DESC, id DESC) rn FROM product_cost_history)
+    query(`WITH ranked AS (SELECT product_id, cost, effective_at, ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY effective_at DESC, id DESC) rn FROM product_cost_history WHERE source IN ('initial','manual','purchase'))
            SELECT p.id, p.name, n.cost AS new_cost, o.cost AS old_cost, n.effective_at, ${NET_PRICE} AS net_price
              FROM ranked n JOIN ranked o ON o.product_id = n.product_id AND o.rn = 2 JOIN products p ON p.id = n.product_id JOIN categories c ON c.id = p.category_id
             WHERE n.rn = 1 AND p.is_active AND o.cost > 0 AND n.cost >= o.cost * 1.03 AND n.effective_at >= now() - ($1::int * interval '1 day')`, [Math.max(days, 30)]),
@@ -43,8 +43,8 @@ async function profitLeaks({ days = 30, thinMarginPct = 8 } = {}) {
 
   const leaks = [];
   for (const r of below.rows) {
-    const perUnit = r2(r.purchase_price - r.net_price);
-    leaks.push({ type: 'below_cost', severity: 'critical', productId: r.id, name: r.name, title: `${r.name} is priced below its cost`, detail: `Sells for ₹${r2(r.net_price)} (excluding GST) but costs ₹${r.purchase_price}: a loss of ₹${perUnit} on every unit.`, amount: r2(perUnit * Math.max(r.stock, 0)), amountBasis: 'loss if the current stock sells at today\'s price', evidence: { sellingPrice: r.selling_price, netPrice: r2(r.net_price), cost: r.purchase_price, stock: r.stock }, action: 'Raise the selling price or correct the cost.', route: '/products' });
+    const perUnit = r2(r.avg_cost - r.net_price);
+    leaks.push({ type: 'below_cost', severity: 'critical', productId: r.id, name: r.name, title: `${r.name} is priced below its cost`, detail: `Sells for ₹${r2(r.net_price)} (excluding GST) but costs ₹${r.avg_cost}: a loss of ₹${perUnit} on every unit.`, amount: r2(perUnit * Math.max(r.stock, 0)), amountBasis: 'loss if the current stock sells at today\'s price', evidence: { sellingPrice: r.selling_price, netPrice: r2(r.net_price), cost: r.avg_cost, stock: r.stock }, action: 'Raise the selling price or correct the cost.', route: '/products' });
   }
   const belowIds = new Set(below.rows.map((r) => r.id));
   for (const r of realized.rows) {
@@ -52,8 +52,8 @@ async function profitLeaks({ days = 30, thinMarginPct = 8 } = {}) {
   }
   for (const r of thin.rows) {
     if (belowIds.has(r.id)) continue;
-    const pct = Math.round(((r.net_price - r.purchase_price) * 1000) / r.net_price) / 10;
-    leaks.push({ type: 'thin_margin', severity: 'medium', productId: r.id, name: r.name, title: `${r.name} earns only ${pct}% margin`, detail: `₹${r2(r.net_price - r.purchase_price)} per unit on ₹${r2(r.net_price)}. It sold ${r.units} units in ${days} days, so a small cost rise would wipe the profit out.`, amount: r2(r.revenue), amountBasis: `revenue (excl. GST) at this thin margin in the last ${days} days`, evidence: { marginPct: pct, unitsSold: r.units }, action: 'Check whether the price can go up a little, or negotiate the cost.', route: '/products' });
+    const pct = Math.round(((r.net_price - r.avg_cost) * 1000) / r.net_price) / 10;
+    leaks.push({ type: 'thin_margin', severity: 'medium', productId: r.id, name: r.name, title: `${r.name} earns only ${pct}% margin`, detail: `₹${r2(r.net_price - r.avg_cost)} per unit on ₹${r2(r.net_price)}. It sold ${r.units} units in ${days} days, so a small cost rise would wipe the profit out.`, amount: r2(r.revenue), amountBasis: `revenue (excl. GST) at this thin margin in the last ${days} days`, evidence: { marginPct: pct, unitsSold: r.units }, action: 'Check whether the price can go up a little, or negotiate the cost.', route: '/products' });
   }
   for (const r of creep.rows) {
     if (belowIds.has(r.id) || r.net_price <= 0) continue;

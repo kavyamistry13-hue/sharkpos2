@@ -22,7 +22,7 @@ async function stockActions() {
   const out = [];
   for (const p of await getProductStats()) {
     if (p.expiryStatus && p.stock > 0 && (p.expiryStatus === 'expired' || p.expiryStatus === 'within7')) {
-      const value = r2(p.stock * p.purchasePrice);
+      const value = r2(p.stock * p.avgCost);
       out.push(make({ id: `expiry:${p.id}`, type: 'expiry', category: 'stock', severity: p.expiryStatus === 'expired' ? 'high' : 'medium', title: p.expiryStatus === 'expired' ? `${p.name} has expired — take it off the shelf` : `${p.name} expires in ${p.daysToExpiry} day${p.daysToExpiry === 1 ? '' : 's'}`, detail: `${p.stock} ${p.unit} in stock (₹${value} at cost). ${p.expiryStatus === 'expired' ? 'Remove it and ask the supplier about a credit note.' : 'Discount it or return it before it expires.'}`, why: [`Expiry date is ${p.expiryStatus === 'expired' ? 'in the past' : `${p.daysToExpiry} days away`}.`], amount: value, amountLabel: 'stock value at cost', route: '/products', cta: 'Open products', evidence: { productId: p.id, stock: p.stock, daysToExpiry: p.daysToExpiry } }));
     }
     if (p.recommendedQty > 0 && (p.outOfStock || p.riskLevel === 'high' || p.lowStock)) {

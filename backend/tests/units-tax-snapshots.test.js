@@ -161,9 +161,11 @@ test('editing price, cost and tax later never changes past sales or past profit'
 
   const sale2 = await o.post('/sales', { items: [{ productId: p.id, quantity: 1 }], paymentMethod: 'cash' });
   assert.equal(sale2.body.subtotal, 80); assert.equal(sale2.body.tax, 14.4);
-  assert.equal((await o.get('/analytics/sales?range=today')).body.totals.profit, 55, '20 (old) + (80 − 45) (new)');
+  // Phase 9.1 rule: editing the purchase price (the expected NEXT supplier price) does not re-value stock already held, so the new sale still
+  // costs the weighted average ₹40 until goods are actually received at the new price.
+  assert.equal((await o.get('/analytics/sales?range=today')).body.totals.profit, 60, '20 (old) + (80 − 40 average cost) (new)');
   const prod = await o.get('/analytics/products?range=30d');
-  assert.equal(prod.body.topRevenue.find((x) => x.id === p.id).margin, 55);
+  assert.equal(prod.body.topRevenue.find((x) => x.id === p.id).margin, 60);
 });
 
 test('sale discount is stored per line and profit accounts for it', async () => {

@@ -6,6 +6,7 @@
 // Receiving adds stock, writes inventory movements, records the actual invoiced cost in product cost history and supplier price history.
 const config = require('../config');
 const batches = require('./batches');
+const costing = require('./costing');
 const { query, withTransaction } = require('../db');
 const { HttpError, badRequest, conflict, notFound } = require('../utils/errors');
 const { invalidateAll } = require('../utils/cache');
@@ -259,6 +260,10 @@ async function receive(id, user, input, idempotencyKey) {
       lines.push({ it, q, rej, cost: l.unitCost !== undefined ? Number(l.unitCost) : Number(it.unit_cost), batchNo: l.batchNo || null, manufacturedDate: l.manufacturedDate || null, expiryDate: l.expiryDate || null });
     }
     if (!lines.length) throw badRequest('Enter a received or rejected quantity for at least one item.');
+    // Lock every product of this delivery up front, in id order. Inserting the receipt lines takes a shared (foreign-key) lock on the product row;
+    // two deliveries of the same product that each held that and then asked for the exclusive lock would deadlock, and the weighted average
+    // needs the receipts of one product to run one after another anyway.
+    await client.query('SELECT id FROM products WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE', [[...new Set(lines.map((l) => l.it.product_id))]]);
 
     const rc = await client.query(
       `INSERT INTO goods_receipts (purchase_order_id, received_by, invoice_no, notes, idempotency_key) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
@@ -273,13 +278,14 @@ async function receive(id, user, input, idempotencyKey) {
       const p = (await client.query(
         `SELECT p.purchase_price, p.selling_price, p.price_includes_tax, c.tax_rate FROM products p JOIN categories c ON c.id = p.category_id WHERE p.id = $1 FOR UPDATE OF p`, [it.product_id],
       )).rows[0];
+      // Weighted-average cost (Phase 9.1): fold this receipt into the product's average BEFORE the stock increment (it records qty before/after).
+      await costing.receive(client, { productId: it.product_id, quantity: q, unitCost: cost, source: 'purchase', refType: 'goods_receipt', refId: receiptId, userId: user.id });
       await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2', [q, it.product_id]);
       // Optional batch / expiry captured at receiving (Phase 9). Without them nothing changes for the product.
       const batch = batchNo || expiryDate ? await batches.addToBatch(client, { productId: it.product_id, batchNo, manufacturedDate, expiryDate, quantity: q, unitCost: cost, supplierId: po.supplier_id, receiptId, userId: user.id }) : null;
       await client.query(`INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type, created_by, batch_id) VALUES ($1,'restock',$2,$3,'goods_receipt',$4,$5)`, [it.product_id, q, receiptId, user.id, batch ? batch.id : null]);
       if (Number(p.purchase_price) !== cost) {
         await client.query('UPDATE products SET purchase_price = $1 WHERE id = $2', [cost, it.product_id]);
-        await client.query(`INSERT INTO product_cost_history (product_id, cost, source, ref_type, ref_id, created_by) VALUES ($1,$2,'purchase','goods_receipt',$3,$4)`, [it.product_id, cost, receiptId, user.id]);
         // Informational only: the selling price is NEVER changed automatically.
         const net = p.price_includes_tax ? p.selling_price / (1 + p.tax_rate / 100) : p.selling_price;
         const margin = (c) => (net > 0 ? Math.round(((net - c) / net) * 1000) / 10 : null);

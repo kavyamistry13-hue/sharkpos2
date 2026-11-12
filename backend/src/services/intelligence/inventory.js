@@ -26,7 +26,7 @@ async function loadMovement() {
 /** Pure: classify one product. Returns null when there is nothing in stock. */
 function classify(p, mv, today, deadDays) {
   if (!(p.stock > 0)) return null;
-  const value = r2(p.stock * p.purchasePrice);
+  const value = r2(p.stock * p.avgCost);
   const sinceSale = mv.last_sold_day ? daysBetween(mv.last_sold_day, today) : null;
   const age = daysBetween(mv.created_day, today);
   const noRecentSale = sinceSale === null ? age >= deadDays : sinceSale >= deadDays;
@@ -35,7 +35,7 @@ function classify(p, mv, today, deadDays) {
   if (p.overstocked) {
     const keep = Math.ceil(p.forecastDaily * COVER_DAYS) + p.minimumStock;
     const excessUnits = Math.max(0, Math.round((p.stock - keep) * 1000) / 1000);
-    return { bucket: 'overstock', value, trapped: r2(excessUnits * p.purchasePrice), units: excessUnits, sinceSale, age };
+    return { bucket: 'overstock', value, trapped: r2(excessUnits * p.avgCost), units: excessUnits, sinceSale, age };
   }
   return { bucket: 'healthy', value, trapped: 0, units: 0, sinceSale, age };
 }

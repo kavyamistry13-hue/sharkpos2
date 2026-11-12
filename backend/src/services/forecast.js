@@ -114,7 +114,7 @@ async function loadProductStats() {
   const tz = config.storeTz;
   const [products, daily, onOrder, dismissed] = await Promise.all([
     query(
-      `SELECT p.id, p.sku, p.name, p.category_id, c.name AS category, c.tax_rate, p.purchase_price, p.selling_price,
+      `SELECT p.id, p.sku, p.name, p.category_id, c.name AS category, c.tax_rate, p.purchase_price, p.avg_cost, p.selling_price,
               p.stock, p.minimum_stock, p.supplier_id, s.name AS supplier, p.lead_time_days, p.expiry_date, p.is_active,
               p.created_at, p.unit, p.price_includes_tax, p.max_stock, p.reorder_level, p.track_batches
          FROM products p
@@ -214,6 +214,7 @@ async function loadProductStats() {
       category: p.category,
       taxRate: p.tax_rate,
       purchasePrice: p.purchase_price,
+      avgCost: p.avg_cost,
       sellingPrice: p.selling_price,
       unit: p.unit,
       priceIncludesTax: p.price_includes_tax,
@@ -231,7 +232,7 @@ async function loadProductStats() {
       expiryDate: p.expiry_date,
       daysToExpiry,
       expiryStatus,
-      stockValue: Math.round(p.stock * p.purchase_price * 100) / 100,
+      stockValue: Math.round(p.stock * p.avg_cost * 100) / 100,
       onOrder: ordered,
       restockDismissed: dismissedSet.has(p.id),
       daysCover: daysCover === null ? null : round1(daysCover),

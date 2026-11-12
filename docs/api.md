@@ -124,3 +124,8 @@ All money-moving calls need an `Idempotency-Key: <uuid>` header (400 `IDEMPOTENC
 | GET | /exports/:kind.csv | O,M (sales, customers: O) | Column allowlists, formula-injection safe, 50,000-row cap. |
 | PUT/POST | /products (`maxStock`, `reorderLevel`) | O,M | Optional; `max >= minimum`. |
 | POST | /purchase-orders/:id/receive | O,M | Lines accept optional `batchNo`, `manufacturedDate`, `expiryDate`. |
+
+## Roadmap Phase 9.1 (weighted-average costing)
+- `GET /products`, `GET /products/:id`: add `avgCost`; `stockValue` is quantity × `avgCost`; `purchasePrice` stays the latest purchase cost.
+- `GET /products/:id/cost-history` (O,M): rows add `prevAvgCost`, `newAvgCost`, `qtyBefore`, `qtyReceived`, `qtyAfter`; `source` is `initial|manual|purchase|return|batch`.
+- No new endpoints. `POST /purchase-orders/:id/receive`, `POST /sales/:id/returns` and `POST /inventory/:id/batches` (with a cost) update the average. `PUT /products/:id` with a new `purchasePrice` changes only `purchasePrice`, never `avgCost`.

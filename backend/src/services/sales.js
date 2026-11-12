@@ -25,7 +25,7 @@ async function discountLimits() {
 async function loadProductsForCart(client, items, { lock }) {
   const ids = [...new Set(items.map((i) => i.productId))].sort((a, b) => a - b);
   const res = await client.query(
-    `SELECT p.id, p.name, p.sku, p.selling_price, p.purchase_price, p.stock, p.is_active, p.expiry_date, p.unit, p.price_includes_tax, c.tax_rate
+    `SELECT p.id, p.name, p.sku, p.selling_price, p.purchase_price, p.avg_cost, p.stock, p.is_active, p.expiry_date, p.unit, p.price_includes_tax, c.tax_rate
        FROM products p JOIN categories c ON c.id = p.category_id
       WHERE p.id = ANY($1::int[]) ${lock ? 'FOR UPDATE OF p' : ''}`,
     [ids],
@@ -51,7 +51,7 @@ function buildLines(items, products) {
     }
     return {
       productId: p.id, name: p.name, quantity: it.quantity, unitPaise: toPaise(p.selling_price), taxRate: p.tax_rate,
-      priceIncludesTax: p.price_includes_tax, unit: p.unit, unitCost: p.purchase_price,
+      priceIncludesTax: p.price_includes_tax, unit: p.unit, unitCost: p.avg_cost,
     };
   });
 }

@@ -380,6 +380,7 @@ sharkpos2/
 │   ├── PHASE_8_BARCODE.md
 │   ├── PHASE_8_1_SCAN_ADD.md
 │   ├── PHASE_9_INVENTORY_OPERATIONS.md
+│   ├── PHASE_9_1_WEIGHTED_AVERAGE_COSTING.md
 │   ├── security.md
 │   ├── SECURITY_AUDIT_REPORT.md
 │   ├── DATA_PROTECTION_CHECKLIST.md
@@ -400,6 +401,7 @@ sharkpos2/
 | [`PHASE_8_BARCODE.md`](docs/PHASE_8_BARCODE.md) | Barcode scanning |
 | [`PHASE_8_1_SCAN_ADD.md`](docs/PHASE_8_1_SCAN_ADD.md) | Scan & Add onboarding |
 | [`PHASE_9_INVENTORY_OPERATIONS.md`](docs/PHASE_9_INVENTORY_OPERATIONS.md) | Inventory & operations (reorder, batches/FEFO, counts, CSV) |
+| [`PHASE_9_1_WEIGHTED_AVERAGE_COSTING.md`](docs/PHASE_9_1_WEIGHTED_AVERAGE_COSTING.md) | Weighted-average costing (roadmap Phase 9.1) |
 | [`security.md`](docs/security.md) | Security architecture |
 | [`SECURITY_AUDIT_REPORT.md`](docs/SECURITY_AUDIT_REPORT.md) | Security audit |
 | [`DATA_PROTECTION_CHECKLIST.md`](docs/DATA_PROTECTION_CHECKLIST.md) | Data protection checklist |

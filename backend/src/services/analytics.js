@@ -21,7 +21,7 @@ async function windowTotals(whereSql, params) {
   // Profit uses the cost, tax and discount stored ON THE SALE LINE (migration 009), so editing a product's price later never rewrites history.
   // Lines created before that migration fall back to today's purchase price (flagged cost_source = 'estimated').
   const margin = await query(
-    `SELECT COALESCE(SUM((COALESCE(si.taxable_value, si.total - si.discount_share) / si.quantity - COALESCE(si.unit_cost, p.purchase_price)) * (si.quantity - si.returned_qty)),0) AS margin
+    `SELECT COALESCE(SUM((COALESCE(si.taxable_value, si.total - si.discount_share) / si.quantity - COALESCE(si.unit_cost, p.avg_cost)) * (si.quantity - si.returned_qty)),0) AS margin
        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
       WHERE s.status = 'completed' AND ${whereSql}`,
     params,
@@ -164,7 +164,7 @@ async function getProductAnalytics(range = '30d') {
   const [stats, rev] = await Promise.all([
     getProductStats(),
     query(
-      `SELECT si.product_id, SUM(si.quantity - si.returned_qty) AS units, SUM(si.total * (si.quantity - si.returned_qty) / si.quantity) AS revenue, SUM((COALESCE(si.taxable_value, si.total - si.discount_share) / si.quantity - COALESCE(si.unit_cost, p.purchase_price)) * (si.quantity - si.returned_qty)) AS margin
+      `SELECT si.product_id, SUM(si.quantity - si.returned_qty) AS units, SUM(si.total * (si.quantity - si.returned_qty) / si.quantity) AS revenue, SUM((COALESCE(si.taxable_value, si.total - si.discount_share) / si.quantity - COALESCE(si.unit_cost, p.avg_cost)) * (si.quantity - si.returned_qty)) AS margin
          FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id
         WHERE s.status = 'completed' AND ${LOCAL}::date > (now() AT TIME ZONE $1)::date - $2::int GROUP BY 1`,
       [TZ, days],

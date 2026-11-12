@@ -11,6 +11,7 @@ const { invalidateAll } = require('../utils/cache');
 const { assertQuantity, round3 } = require('../utils/units');
 const { evaluateSales } = require('./risk');
 const credit = require('./credit');
+const costing = require('./costing');
 
 const REASONS = ['damaged', 'wrong_item', 'changed_mind', 'quality', 'expired', 'other'];
 const NO_RESTOCK_REASONS = ['damaged', 'expired'];           // returned goods that cannot go back on the shelf by default
@@ -204,6 +205,9 @@ async function processReturn(user, saleId, input, idempotencyKey = null) {
 
     // Put units back on the shelf (lock products in id order so two returns can never deadlock).
     for (const p of [...plan].filter((x) => x.restock).sort((a, b) => a.line.product_id - b.line.product_id)) {
+      // Weighted-average cost: the units come back at the cost they were sold at (the sale-line snapshot), not at today's average.
+      // Legacy lines with no snapshot re-enter at the current average, which leaves it unchanged.
+      if (p.line.unit_cost != null) await costing.receive(client, { productId: p.line.product_id, quantity: p.quantity, unitCost: p.line.unit_cost, source: 'return', refType: 'sale_return', refId: ret.id, userId: user.id });
       await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2', [p.quantity, p.line.product_id]);
       await client.query(
         `INSERT INTO inventory_movements (product_id, movement_type, quantity, reference_id, reference_type, created_by) VALUES ($1,'refund',$2,$3,'refund',$4)`,

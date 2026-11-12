@@ -51,7 +51,7 @@ test('query parameters are validated', async () => {
 
 // ---------------------------------------------------------------- inventory cash + dead stock
 test('classify(): dead, expired, overstock excess, healthy and empty-stock rules', () => {
-  const p = (o) => ({ stock: 100, purchasePrice: 10, forecastDaily: 2, minimumStock: 10, overstocked: false, expiryStatus: null, ...o });
+  const p = (o) => ({ stock: 100, purchasePrice: 10, avgCost: 10, forecastDaily: 2, minimumStock: 10, overstocked: false, expiryStatus: null, ...o });
   const mv = { created_day: '2026-01-01', last_sold_day: '2026-10-30' };
   assert.equal(classify(p({ stock: 0 }), mv, '2026-11-01', 60), null, 'nothing in stock');
   assert.deepEqual(pick(classify(p(), mv, '2026-11-01', 60)), { bucket: 'healthy', value: 1000, trapped: 0 });

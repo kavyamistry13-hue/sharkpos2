@@ -33,7 +33,7 @@ async function activity(q, { salesW, refundW, payW, params }) {
          FROM credit_ledger l WHERE ${payW}`, params),
     q(`SELECT COALESCE(SUM(si.quantity - si.returned_qty),0) AS units, COUNT(DISTINCT si.product_id) FILTER (WHERE si.quantity > si.returned_qty)::int AS products
          FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.status = 'completed' AND ${salesW}`, params),
-    q(`SELECT COALESCE(SUM((COALESCE(si.taxable_value, si.total - si.discount_share) / si.quantity - COALESCE(si.unit_cost, p.purchase_price)) * (si.quantity - si.returned_qty)),0) AS profit
+    q(`SELECT COALESCE(SUM((COALESCE(si.taxable_value, si.total - si.discount_share) / si.quantity - COALESCE(si.unit_cost, p.avg_cost)) * (si.quantity - si.returned_qty)),0) AS profit
          FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN products p ON p.id = si.product_id WHERE s.status = 'completed' AND ${salesW}`, params),
   ]);
   const pick = (rows, m) => rows.find((r) => r.method === m) || { n: 0, amount: 0 };
@@ -108,7 +108,7 @@ async function closingReport(dateInput) {
     inventory: {
       unitsSold: a.sales.unitsSold, productsSold: a.sales.productsSold, stockReceivedUnits: received.rows[0].units, stockReceivedValue: r2(received.rows[0].value), deliveriesReceived: received.rows[0].deliveries,
       restockOrdersApproved: restock.rows[0].n, lowStockNow: stats.filter((p) => p.lowStock && !p.outOfStock).length, outOfStockNow: stats.filter((p) => p.outOfStock).length,
-      stockValueNow: r2(stats.reduce((x, p) => x + p.stock * p.purchasePrice, 0)),
+      stockValueNow: r2(stats.reduce((x, p) => x + p.stock * p.avgCost, 0)),
     },
     topProducts: top.rows.map((r) => ({ name: r.name, units: r.units, revenue: r2(r.revenue) })),
     cashiers: cashiers.rows.map((r) => ({ name: r.cashier, bills: r.bills, total: r2(r.total), cash: r2(r.cash) })),
