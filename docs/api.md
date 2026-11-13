@@ -120,6 +120,9 @@ All money-moving calls need an `Idempotency-Key: <uuid>` header (400 `IDEMPOTENC
 | GET | /inventory/timeline | O,M | Paged movement feed (`stockAfter`, reason, batch). |
 | GET | /inventory/expiry, /inventory/batches, /inventory/:productId/batches | O,M | Batch / expiry reports. POST on `/:productId/batches` adds a batch (opening stock). |
 | * | /stock-counts (+ `/:id/items`, `/submit`, `/approve`, `/cancel`) | O,M | Count -> review -> approve. Only approve changes stock (409 `COUNT_STALE`, `COUNT_ALREADY_OPEN`). |
+| GET | /stock-counts/candidates | O,M | Read-only suggestions of products to count (`filter`=low\|never\|least_recent\|value, `categoryId`, `supplierId`, `countId`, `limit`). `lastCountedAt` comes only from approved counts. |
+| POST | /stock-counts/:id/reopen | O,M | review -> counting. No stock/cost change; items kept. 409 `COUNT_NOT_REOPENABLE` otherwise. |
+| PUT | /stock-counts/:id/items/:productId | O,M | `{counted, recount?}`. `recount:true` (counting only) refreshes the expected qty and unit cost snapshots to live values; default keeps them. Items carry `currentStock`, `stale`, `inactive`; count detail carries `staleCount`. `COUNT_STALE` lists each product with reason `stock_changed`, `inactive` or `missing`. |
 | POST | /products/import/validate, /preview, /import | O,M | Body `text/csv`. All-or-nothing; 422 `IMPORT_INVALID` with row errors. Limits: 5 MB / 5,000 rows. |
 | GET | /exports/:kind.csv | O,M (sales, customers: O) | Column allowlists, formula-injection safe, 50,000-row cap. |
 | PUT/POST | /products (`maxStock`, `reorderLevel`) | O,M | Optional; `max >= minimum`. |

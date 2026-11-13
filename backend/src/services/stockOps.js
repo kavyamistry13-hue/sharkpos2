@@ -115,7 +115,10 @@ function summarise(items) {
 
 const shapeItem = (r) => {
   const expected = Number(r.expected_qty); const counted = Number(r.counted_qty); const variance = round3(counted - expected);
-  return { id: r.id, productId: r.product_id, name: r.name, sku: r.sku, unit: r.unit, expected, counted, variance, unitCost: Number(r.unit_cost), varianceValue: money(variance * Number(r.unit_cost)), currentStock: Number(r.current_stock) };
+  const currentStock = Number(r.current_stock);
+  // stale = the product's live stock no longer matches the snapshot this count was taken against; inactive = archived after it was counted.
+  // Both block approval (all-or-nothing), so the screen can show them BEFORE anyone clicks Approve.
+  return { id: r.id, productId: r.product_id, name: r.name, sku: r.sku, unit: r.unit, expected, counted, variance, unitCost: Number(r.unit_cost), varianceValue: money(variance * Number(r.unit_cost)), currentStock, inactive: r.is_active === false, stale: r.is_active === false || currentStock !== expected };
 };
 
 async function loadCount(client, id, lock = false) {
@@ -127,12 +130,13 @@ async function loadCount(client, id, lock = false) {
 async function countDetail(client, id) {
   const c = await loadCount(client, id);
   const items = (await client.query(
-    `SELECT i.id, i.product_id, i.expected_qty, i.counted_qty, i.unit_cost, p.name, p.sku, p.unit, p.stock AS current_stock
+    `SELECT i.id, i.product_id, i.expected_qty, i.counted_qty, i.unit_cost, p.name, p.sku, p.unit, p.stock AS current_stock, p.is_active
        FROM stock_count_items i JOIN products p ON p.business_id = i.business_id AND p.id = i.product_id
       WHERE i.stock_count_id = $1 ORDER BY p.name`, [id])).rows.map(shapeItem);
   return {
     id: c.id, title: c.title, status: c.status, note: c.note, startedBy: c.started_by_name, startedAt: c.started_at, submittedAt: c.submitted_at,
     approvedBy: c.approved_by_name, approvedAt: c.approved_at, items, summary: summarise(items),
+    staleCount: c.status === 'approved' || c.status === 'cancelled' ? 0 : items.filter((i) => i.stale).length,
   };
 }
 
@@ -152,21 +156,30 @@ async function listCounts() {
 
 const getCount = (id) => withTransaction((client) => countDetail(client, id));
 
-/** Record (or re-record) the physical quantity for one product. The expected quantity is frozen the FIRST time the product is counted. */
-async function recordItem(countId, productId, countedQty, userId) {
+/**
+ * Record (or re-record) the physical quantity for one product. The expected quantity and cost snapshot are frozen the FIRST time the product is
+ * counted, and a normal re-record only changes the counted quantity (so fixing a typo can never move the baseline).
+ * { recount: true } is the explicit opt-in: the product has been physically counted AGAIN, so expected_qty := live stock and unit_cost := live
+ * avg_cost are refreshed together with the new counted quantity. It never changes stock or avg_cost, and only works while the count is 'counting'.
+ */
+async function recordItem(countId, productId, countedQty, userId, { recount = false } = {}) {
+  let recounted = null;
   await withTransaction(async (client) => {
     const c = await loadCount(client, countId, true);
     if (c.status !== 'counting') throw conflict(`This count is ${c.status} — items can no longer be changed.`, { code: 'COUNT_NOT_OPEN' });
     const p = (await client.query('SELECT name, unit, stock, avg_cost FROM products WHERE id = $1 AND is_active = TRUE', [productId])).rows[0];
     if (!p) throw notFound('Product not found.');
     assertQuantity(p.unit, countedQty, 'Counted quantity', p.name);
+    const prev = recount ? (await client.query('SELECT expected_qty, unit_cost, counted_qty FROM stock_count_items WHERE stock_count_id = $1 AND product_id = $2', [countId, productId])).rows[0] : null;
     await client.query(
       `INSERT INTO stock_count_items (stock_count_id, product_id, expected_qty, counted_qty, unit_cost, counted_by) VALUES ($1,$2,$3,$4,$5,$6)
-       ON CONFLICT (business_id, stock_count_id, product_id) DO UPDATE SET counted_qty = EXCLUDED.counted_qty, counted_by = EXCLUDED.counted_by`,
+       ON CONFLICT (business_id, stock_count_id, product_id) DO UPDATE SET counted_qty = EXCLUDED.counted_qty, counted_by = EXCLUDED.counted_by${recount ? ', expected_qty = EXCLUDED.expected_qty, unit_cost = EXCLUDED.unit_cost' : ''}`,
       [countId, productId, p.stock, countedQty, p.avg_cost, userId],
     );
+    if (recount) recounted = { productId, name: p.name, previousExpected: prev ? Number(prev.expected_qty) : null, previousUnitCost: prev ? Number(prev.unit_cost) : null, previousCounted: prev ? Number(prev.counted_qty) : null, expected: Number(p.stock), unitCost: Number(p.avg_cost), counted: countedQty };
   });
-  return getCount(countId);
+  const detail = await getCount(countId);
+  return recounted ? { ...detail, recount: recounted } : detail;
 }
 
 async function removeItem(countId, productId) {
@@ -186,6 +199,16 @@ async function submitCount(countId, userId) {
     const n = (await client.query('SELECT COUNT(*)::int AS n FROM stock_count_items WHERE stock_count_id = $1', [countId])).rows[0].n;
     if (!n) throw badRequest('Count at least one product before sending the count for review.');
     await client.query(`UPDATE stock_counts SET status = 'review', submitted_by = $2, submitted_at = now() WHERE id = $1`, [countId, userId]);
+    return countDetail(client, countId);
+  });
+}
+
+/** review → counting. Changes NO stock and NO avg_cost, keeps every item with its original expected quantity and cost snapshot; only unlocks editing. */
+async function reopenCount(countId) {
+  return withTransaction(async (client) => {
+    const c = await loadCount(client, countId, true);
+    if (c.status !== 'review') throw conflict(`Only a count that is in review can be reopened (this one is ${c.status}).`, { code: 'COUNT_NOT_REOPENABLE', status: c.status });
+    await client.query(`UPDATE stock_counts SET status = 'counting', submitted_by = NULL, submitted_at = NULL WHERE id = $1`, [countId]);
     return countDetail(client, countId);
   });
 }
@@ -212,10 +235,13 @@ async function approveCount(countId, userId) {
       `SELECT i.product_id, i.expected_qty, i.counted_qty FROM stock_count_items i WHERE i.stock_count_id = $1 ORDER BY i.product_id`, [countId])).rows;
     const stale = []; const applied = [];
     for (const i of items) {
-      const p = (await client.query('SELECT name, unit, stock FROM products WHERE id = $1 FOR UPDATE', [i.product_id])).rows[0];
-      if (Number(p.stock) !== Number(i.expected_qty)) stale.push({ productId: i.product_id, name: p.name, expected: Number(i.expected_qty), currentStock: Number(p.stock) });
+      const p = (await client.query('SELECT name, unit, stock, is_active FROM products WHERE id = $1 FOR UPDATE', [i.product_id])).rows[0];
+      if (!p) stale.push({ productId: i.product_id, name: null, reason: 'missing', expected: Number(i.expected_qty), currentStock: null });
+      else if (!p.is_active) stale.push({ productId: i.product_id, name: p.name, reason: 'inactive', expected: Number(i.expected_qty), currentStock: Number(p.stock) });
+      else if (Number(p.stock) !== Number(i.expected_qty)) stale.push({ productId: i.product_id, name: p.name, reason: 'stock_changed', expected: Number(i.expected_qty), currentStock: Number(p.stock) });
     }
-    if (stale.length) throw conflict('Stock changed after these products were counted. Re-count them, then approve again.', { code: 'COUNT_STALE', stale });
+    // Nothing has been applied yet at this point, so refusing leaves stock, movements and the count exactly as they were.
+    if (stale.length) throw conflict('Some counted products changed or are no longer active, so this count cannot be approved. Reopen it, remove or re-count these products, then approve again.', { code: 'COUNT_STALE', stale });
     for (const i of items) {
       const delta = round3(Number(i.counted_qty) - Number(i.expected_qty));
       if (delta === 0) continue;
@@ -229,4 +255,29 @@ async function approveCount(countId, userId) {
   return out;
 }
 
-module.exports = { REASONS, applyAdjustment, adjustStock, addBatchStock, getTimeline, startCount, listCounts, getCount, recordItem, removeItem, submitCount, cancelCount, approveCount };
+/**
+ * Read-only helper for building a count list (cycle counting). Creates nothing and changes nothing. Active products only (tenant scope + RLS).
+ * lastCountedAt comes ONLY from APPROVED counts: a count in progress, in review or cancelled never marks a product as counted.
+ * filter: low (at/below reorder level or minimum) | never (never in an approved count) | least_recent (oldest approved count first, never-counted first) | value (highest stock value first).
+ * countId (optional): leave out products already in that count.
+ */
+async function candidates({ categoryId, supplierId, filter, countId, limit = 50 } = {}) {
+  const where = ['p.is_active = TRUE']; const params = [];
+  const add = (sql, v) => { params.push(v); where.push(sql.replace('?', `$${params.length}`)); };
+  if (categoryId) add('p.category_id = ?', categoryId);
+  if (supplierId) add('p.supplier_id = ?', supplierId);
+  if (countId) add('NOT EXISTS (SELECT 1 FROM stock_count_items x WHERE x.stock_count_id = ? AND x.product_id = p.id)', countId);
+  if (filter === 'low') where.push('COALESCE(p.reorder_level, p.minimum_stock) > 0 AND p.stock <= COALESCE(p.reorder_level, p.minimum_stock)');
+  if (filter === 'never') where.push('lc.last_counted_at IS NULL');
+  const order = filter === 'value' ? 'p.stock * p.avg_cost DESC, p.name' : filter === 'least_recent' || filter === 'never' ? 'lc.last_counted_at ASC NULLS FIRST, p.name' : 'p.name';
+  params.push(Math.min(Math.max(Number(limit) || 50, 1), 200));
+  const rows = (await query(
+    `SELECT p.id, p.sku, p.name, p.unit, p.stock, p.avg_cost, p.minimum_stock, p.reorder_level, c.name AS category, s.name AS supplier, lc.last_counted_at
+       FROM products p JOIN categories c ON c.id = p.category_id LEFT JOIN suppliers s ON s.id = p.supplier_id
+       LEFT JOIN (SELECT i.product_id, MAX(sc.approved_at) AS last_counted_at FROM stock_count_items i JOIN stock_counts sc ON sc.business_id = i.business_id AND sc.id = i.stock_count_id
+                   WHERE sc.status = 'approved' GROUP BY i.product_id) lc ON lc.product_id = p.id
+      WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT $${params.length}`, params)).rows;
+  return rows.map((r) => ({ id: r.id, sku: r.sku, name: r.name, unit: r.unit, stock: Number(r.stock), avgCost: Number(r.avg_cost), stockValue: money(Number(r.stock) * Number(r.avg_cost)), minimumStock: Number(r.minimum_stock), reorderLevel: r.reorder_level == null ? null : Number(r.reorder_level), category: r.category, supplier: r.supplier, lastCountedAt: r.last_counted_at, neverCounted: r.last_counted_at == null }));
+}
+
+module.exports = { REASONS, candidates, reopenCount, applyAdjustment, adjustStock, addBatchStock, getTimeline, startCount, listCounts, getCount, recordItem, removeItem, submitCount, cancelCount, approveCount };

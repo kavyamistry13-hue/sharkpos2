@@ -3,11 +3,12 @@ import { ClipboardCheck, Lock, Search, X } from 'lucide-react';
 import { api } from '../services/api';
 import { useAsync, useDebounced } from '../hooks/useAsync';
 import { useToast } from '../hooks/useToast';
-import { Async, Badge, Button, Card, CardHeader, ConfirmDialog, DataTable, EmptyState, Field, Input, Stat } from './ui';
-import { inr, dateTime } from '../utils/format';
+import { Async, Badge, Button, Card, CardHeader, ConfirmDialog, DataTable, EmptyState, Field, Input, Select, Stat } from './ui';
+import { inr, dateTime, dateOnly } from '../utils/format';
 import { DECIMAL_UNITS } from '../utils/units';
 
-// Physical stock count (Phase 9). Counting and review NEVER change stock; only "Approve" does, on the server, as audited adjustments.
+// Physical stock count (Phase 9; Phase 10 adds reopen, explicit re-count, stale warnings and a cycle-count list). Counting and review NEVER change
+// stock; only "Approve" does, on the server, as audited adjustments.
 const STATUS = { counting: ['info', 'Counting'], review: ['warn', 'In review'], approved: ['ok', 'Approved'], cancelled: ['neutral', 'Cancelled'] };
 
 function Summary({ s }) {
@@ -47,16 +48,56 @@ function ProductPicker({ onPick, disabled }) {
 
 function CountRow({ item, locked, onSave, onRemove }) {
   const [v, setV] = useState(String(item.counted));
-  useEffect(() => setV(String(item.counted)), [item.counted]);
+  const [recount, setRecount] = useState(false);
+  const inputRef = useRef(null);
+  useEffect(() => { setV(String(item.counted)); setRecount(false); }, [item.counted, item.expected]);
   const dec = DECIMAL_UNITS.includes(item.unit);
-  const changed = item.currentStock !== item.expected;
+  const save = () => { if (v !== '' && (recount || Number(v) !== item.counted)) onSave(item.productId, Number(v), recount); };
   return (
     <div className="flex flex-wrap items-center gap-3 border-t border-line-soft px-4 py-3">
-      <div className="min-w-0 flex-1 basis-40"><p className="truncate font-semibold">{item.name}</p><p className="text-xs text-muted num">{item.sku} · expected {item.expected} {item.unit}</p>{changed && <p className="mt-0.5 text-xs font-semibold text-warn">Stock changed to {item.currentStock} since you counted — re-count before approving.</p>}</div>
-      <Input aria-label={`Counted quantity for ${item.name}`} className="!h-11 !w-28 text-right num" inputMode={dec ? 'decimal' : 'numeric'} value={v} disabled={locked} onChange={(e) => setV(e.target.value.replace(/[^0-9.]/g, ''))} onBlur={() => { if (v !== '' && Number(v) !== item.counted) onSave(item.productId, Number(v)); }} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+      <div className="min-w-0 flex-1 basis-40">
+        <p className="truncate font-semibold">{item.name}</p>
+        <p className="text-xs text-muted num">{item.sku} · expected {item.expected} {item.unit}</p>
+        {item.inactive && <p className="mt-0.5 text-xs font-semibold text-bad">This product was archived after it was counted — {locked ? 'reopen the count and remove it.' : 'remove it from the count.'}</p>}
+        {!item.inactive && item.stale && <p className="mt-0.5 text-xs font-semibold text-warn">Stock changed to {item.currentStock} since you counted (expected {item.expected}). {locked ? 'Reopen the count to re-count it.' : recount ? 'Enter what you count now.' : 'Re-count it before approving.'}</p>}
+      </div>
+      <Input ref={inputRef} aria-label={`Counted quantity for ${item.name}`} className="!h-11 !w-28 text-right num" inputMode={dec ? 'decimal' : 'numeric'} value={v} disabled={locked} onChange={(e) => setV(e.target.value.replace(/[^0-9.]/g, ''))} onBlur={save} onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+      {!locked && item.stale && !item.inactive && <Button variant="secondary" size="sm" onClick={() => { setRecount(true); setV(''); setTimeout(() => inputRef.current && inputRef.current.focus(), 0); }}>Re-count</Button>}
       <div className="w-24 text-right"><p className={`font-bold num ${item.variance < 0 ? 'text-bad' : item.variance > 0 ? 'text-warn' : 'text-ok'}`}>{item.variance > 0 ? '+' : ''}{item.variance}</p><p className="text-xs text-muted num">{item.variance === 0 ? 'matched' : `${item.varianceValue < 0 ? '−' : '+'}${inr(Math.abs(item.varianceValue), 2)}`}</p></div>
       {!locked && <Button variant="ghost" size="sm" aria-label={`Remove ${item.name} from the count`} onClick={() => onRemove(item.productId)}><X className="size-4" /></Button>}
     </div>
+  );
+}
+
+/** Cycle counting: a read-only list of products worth counting next (nothing is created until you enter a quantity). */
+const FOCUS = [['least_recent', 'Not counted for longest'], ['never', 'Never counted'], ['low', 'Low stock'], ['value', 'Highest stock value']];
+function CandidateList({ countId, onAdd, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [focus, setFocus] = useState('least_recent');
+  const [categoryId, setCategoryId] = useState('');
+  const [supplierId, setSupplierId] = useState('');
+  const lookups = useAsync(() => (open ? api.get('/products/lookups') : Promise.resolve(null)), [open]);
+  const res = useAsync(() => (open ? api.get('/stock-counts/candidates', { filter: focus, categoryId: categoryId || undefined, supplierId: supplierId || undefined, countId, limit: 12 }) : Promise.resolve(null)), [open, focus, categoryId, supplierId, countId]);
+  if (!open) return <Button variant="secondary" size="sm" disabled={disabled} onClick={() => setOpen(true)} data-testid="count-list-open">Suggest products to count</Button>;
+  const rows = res.data ? res.data.rows : [];
+  return (
+    <Card>
+      <CardHeader title="Products to count next" subtitle="Pick a focus, then add products to this count. Nothing changes until you enter a quantity." action={<Button variant="ghost" size="sm" onClick={() => setOpen(false)}>Close</Button>} />
+      <div className="grid gap-3 px-4 pb-3 sm:grid-cols-3">
+        <Field label="Focus"><Select aria-label="Count focus" value={focus} onChange={(e) => setFocus(e.target.value)}>{FOCUS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select></Field>
+        <Field label="Category"><Select aria-label="Category filter" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}><option value="">All</option>{lookups.data && lookups.data.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+        <Field label="Supplier"><Select aria-label="Supplier filter" value={supplierId} onChange={(e) => setSupplierId(e.target.value)}><option value="">All</option>{lookups.data && lookups.data.suppliers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+      </div>
+      {res.loading && !res.data && <p className="px-4 pb-3 text-sm text-muted">Loading…</p>}
+      {res.data && rows.length === 0 && <p className="px-4 pb-3 text-sm text-muted">Nothing to suggest for this focus.</p>}
+      {rows.map((p) => (
+        <div key={p.id} className="flex items-center gap-3 border-t border-line-soft px-4 py-2.5">
+          <div className="min-w-0 flex-1"><p className="truncate font-semibold">{p.name}</p><p className="text-xs text-muted num">{p.sku} · stock {p.stock} {p.unit} · {p.neverCounted ? 'never counted' : `last counted ${dateOnly(p.lastCountedAt)}`}</p></div>
+          <Button size="sm" variant="secondary" disabled={disabled} onClick={() => onAdd(p)}>Add</Button>
+        </div>
+      ))}
+      {rows.length > 1 && <div className="border-t border-line-soft px-4 py-2.5 text-right"><Button size="sm" disabled={disabled} onClick={() => rows.forEach(onAdd)}>Add all {rows.length}</Button></div>}
+    </Card>
   );
 }
 
@@ -102,25 +143,33 @@ function CountDetail({ id, onBack, onChanged }) {
           {d.status === 'approved' && <p className="rounded-lg bg-ok-soft px-4 py-2.5 text-sm font-semibold text-ok">Approved {dateTime(d.approvedAt)}{d.approvedBy ? ` by ${d.approvedBy}` : ''}. Stock was corrected.</p>}
           {d.status === 'cancelled' && <p className="rounded-lg bg-canvas px-4 py-2.5 text-sm text-muted">This count was cancelled. Stock was not changed.</p>}
           {d.items.length > 0 && <Summary s={d.summary} />}
+          {d.staleCount > 0 && ['counting', 'review'].includes(d.status) && (
+            <div role="alert" className="rounded-lg border border-warn/40 bg-warn-soft px-4 py-3 text-sm text-warn" data-testid="stale-warning">
+              <p className="font-bold">{d.staleCount} product{d.staleCount === 1 ? '' : 's'} changed or {d.staleCount === 1 ? 'was' : 'were'} archived since {d.staleCount === 1 ? 'it was' : 'they were'} counted.</p>
+              <p className="mt-0.5">{d.status === 'review' ? 'Approval will be refused until this is fixed: go back to counting, then re-count or remove them.' : 'Re-count or remove them before sending the count for review.'}</p>
+            </div>
+          )}
           {err && err.details && err.details.code === 'COUNT_STALE' && (
             <div role="alert" className="rounded-lg border border-bad/30 bg-bad-soft px-4 py-3 text-sm text-bad">
               <p className="font-bold">Stock changed after these products were counted — nothing was applied.</p>
-              <ul className="mt-1 list-disc pl-5">{err.details.stale.map((s) => <li key={s.productId}>{s.name}: counted against {s.expected}, now {s.currentStock}</li>)}</ul>
-              <p className="mt-1">Cancel this count and start a new one when the shop is quiet, or re-count these products.</p>
+              <ul className="mt-1 list-disc pl-5">{err.details.stale.map((s) => <li key={s.productId}>{s.reason === 'inactive' ? `${s.name}: archived after it was counted` : `${s.name}: counted against ${s.expected}, now ${s.currentStock}`}</li>)}</ul>
+              <p className="mt-1">Use “Back to counting”, then re-count or remove these products — or cancel this count.</p>
             </div>
           )}
           {d.status === 'counting' && <ProductPicker onPick={(p) => setPending((x) => (x.some((y) => y.id === p.id) ? x : [p, ...x]))} disabled={!!busy} />}
+          {d.status === 'counting' && <CandidateList countId={id} disabled={!!busy} onAdd={(p) => setPending((x) => (x.some((y) => y.id === p.id) ? x : [p, ...x]))} />}
           <Card>
             <CardHeader title="Products counted" subtitle={d.items.length ? `${d.items.length} product${d.items.length === 1 ? '' : 's'}` : undefined} />
             {pending.map((p) => <PendingRow key={p.id} p={p} onDrop={(pid) => setPending((x) => x.filter((y) => y.id !== pid))} onSave={(prod, c) => act('save', () => api.put(`/stock-counts/${id}/items/${prod.id}`, { counted: c })).then((done) => { if (done) setPending((x) => x.filter((y) => y.id !== prod.id)); })} />)}
             {d.items.length === 0 && pending.length === 0 ? <EmptyState icon={ClipboardCheck} title="Nothing counted yet" hint="Search or scan a product above, then enter the quantity you counted." /> : d.items.map((it) => (
-              <CountRow key={it.productId} item={it} locked={locked} onSave={(pid, c) => act('save', () => api.put(`/stock-counts/${id}/items/${pid}`, { counted: c }))} onRemove={(pid) => act('rm', () => api.del(`/stock-counts/${id}/items/${pid}`))} />
+              <CountRow key={it.productId} item={it} locked={locked} onSave={(pid, c, recount) => act('save', () => api.put(`/stock-counts/${id}/items/${pid}`, recount ? { counted: c, recount: true } : { counted: c }), recount ? 'Re-counted against today\'s stock.' : undefined)} onRemove={(pid) => act('rm', () => api.del(`/stock-counts/${id}/items/${pid}`))} />
             ))}
           </Card>
           <div className="flex flex-wrap justify-end gap-2">
             {['counting', 'review'].includes(d.status) && <Button variant="secondary" disabled={!!busy} onClick={() => setConfirm('cancel')}>Cancel count</Button>}
+            {d.status === 'review' && <Button variant="secondary" disabled={!!busy} loading={busy === 'reopen'} onClick={() => act('reopen', () => api.post(`/stock-counts/${id}/reopen`), 'Back to counting. Stock unchanged.')} data-testid="reopen-count">Back to counting</Button>}
             {d.status === 'counting' && <Button disabled={!d.items.length || !!busy} loading={busy === 'submit'} onClick={() => act('submit', () => api.post(`/stock-counts/${id}/submit`), 'Sent for review.')}>Send for review</Button>}
-            {d.status === 'review' && <Button variant="success" disabled={!!busy} loading={busy === 'approve'} onClick={() => setConfirm('approve')} data-testid="approve-count">Approve & correct stock</Button>}
+            {d.status === 'review' && <Button variant="success" disabled={!!busy || d.staleCount > 0} loading={busy === 'approve'} onClick={() => setConfirm('approve')} data-testid="approve-count">Approve & correct stock</Button>}
           </div>
           <ConfirmDialog open={confirm === 'approve'} onClose={() => setConfirm('')} loading={busy === 'approve'} title="Approve this count?" confirmLabel="Approve & correct stock"
             message={`Stock will be corrected for ${d.summary.short + d.summary.over} product(s) (estimated ${d.summary.varianceValue < 0 ? 'loss' : 'gain'} ${inr(Math.abs(d.summary.varianceValue), 2)}). This is recorded in the stock history and cannot be undone.`}
