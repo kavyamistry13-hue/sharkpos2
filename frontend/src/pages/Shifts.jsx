@@ -4,6 +4,8 @@ import { api } from '../services/api';
 import { useAsync } from '../hooks/useAsync';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
+import { useOffline } from '../hooks/useOffline';
+import { UnsyncedNotice } from '../components/OfflineStatus';
 import { Async, Badge, Button, Card, CardHeader, DataTable, Field, Input, Modal, PageHeader, Select, Stat, Textarea } from '../components/ui';
 import { dateTime, inr } from '../utils/format';
 
@@ -20,6 +22,7 @@ function CloseModal({ shift, onClose, onDone }) {
   const { user } = useAuth();
   const toast = useToast();
   const isMgr = user.role !== 'cashier';
+  const { unsynced } = useOffline();            // offline sales not yet on the server would be missing from the expected cash
   const staff = useAsync(() => (isMgr ? api.get('/employees') : Promise.resolve({ rows: [] })), []);
   const [f, setF] = useState({ countedCash: '', notes: '', handoverTo: '', handoverNote: '' });
   const [busy, setBusy] = useState(false);
@@ -37,13 +40,14 @@ function CloseModal({ shift, onClose, onDone }) {
   return (
     <Modal open onClose={onClose} title={`Close shift · ${shift.cashier}`}>
       <form onSubmit={submit} className="space-y-3">
+        <UnsyncedNotice />
         <p className="text-sm text-muted">Expected in drawer: <b className="num text-text">{inr(expected, 2)}</b> (opening {inr(shift.openingCash, 2)} + cash movement). Count the drawer and enter what is really there.</p>
         <Field label="Counted cash (₹)"><Input autoFocus inputMode="decimal" value={f.countedCash} onChange={(e) => setF({ ...f, countedCash: e.target.value.replace(/[^0-9.]/g, '') })} /></Field>
         {variance !== null && <p className={`text-sm font-semibold num ${variance === 0 ? 'text-ok' : 'text-bad'}`}>{variance === 0 ? 'Matches.' : variance > 0 ? `Over by ${inr(variance, 2)}` : `Short by ${inr(-variance, 2)}`}</p>}
         <Field label={variance ? 'Reason for the difference (required)' : 'Note (optional)'}><Textarea rows={2} maxLength={500} value={f.notes} onChange={set('notes')} /></Field>
         {isMgr && <Field label="Hand over to (optional)"><Select value={f.handoverTo} onChange={set('handoverTo')}><option value="">Nobody in particular</option>{people.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select></Field>}
         <Field label="Handover note (optional)" hint="Anything the next person should know: pending bills, customer promises, low stock."><Textarea rows={2} maxLength={500} value={f.handoverNote} onChange={set('handoverNote')} /></Field>
-        <div className="flex justify-end gap-2"><Button type="button" variant="secondary" onClick={onClose}>Cancel</Button><Button type="submit" loading={busy} disabled={f.countedCash === '' || (variance !== null && variance !== 0 && f.notes.trim().length < 3)}>Close shift</Button></div>
+        <div className="flex justify-end gap-2"><Button type="button" variant="secondary" onClick={onClose}>Cancel</Button><Button type="submit" loading={busy} disabled={unsynced > 0 || f.countedCash === '' || (variance !== null && variance !== 0 && f.notes.trim().length < 3)}>Close shift</Button></div>
       </form>
     </Modal>
   );
@@ -51,6 +55,7 @@ function CloseModal({ shift, onClose, onDone }) {
 
 export default function Shifts() {
   const { user } = useAuth();
+  const { unsynced } = useOffline();
   const toast = useToast();
   const cur = useAsync(() => api.get('/shifts/current'), []);
   const hist = useAsync(() => api.get('/shifts', { status: 'closed', limit: 30 }), []);
@@ -75,11 +80,12 @@ export default function Shifts() {
   ];
   return (
     <div className="mx-auto max-w-[1100px] space-y-5">
+      <UnsyncedNotice />
       <PageHeader title="Shifts" subtitle={user.role === 'cashier' ? 'Start your shift, close it with a cash count, and hand over.' : 'Every cashier’s shifts, cash counts and handovers.'} />
       <Async state={cur} rows={3}>
         {({ shift, suggestedOpeningCash }) => shift ? (
           <Card>
-            <CardHeader title={`Your shift is open since ${dateTime(shift.openedAt)}`} subtitle={`Opening cash ${inr(shift.openingCash, 2)}`} action={<Button onClick={() => setClosing(shift)}><DoorClosed className="size-4" aria-hidden="true" />Close shift</Button>} />
+            <CardHeader title={`Your shift is open since ${dateTime(shift.openedAt)}`} subtitle={`Opening cash ${inr(shift.openingCash, 2)}`} action={<Button disabled={unsynced > 0} title={unsynced > 0 ? 'Sync the offline sales first' : undefined} onClick={() => setClosing(shift)}><DoorClosed className="size-4" aria-hidden="true" />Close shift</Button>} />
             <div className="p-4 pt-0"><Summary s={shift.summary} /></div>
           </Card>
         ) : (

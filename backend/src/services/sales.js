@@ -47,7 +47,7 @@ function buildLines(items, products) {
     if (p.expiry_date && p.expiry_date < todayIso) throw badRequest(`${p.name} is expired and cannot be sold.`);
     assertQuantity(p.unit, it.quantity, 'Quantity', p.name);
     if (p.stock < it.quantity) {
-      throw conflict(`Insufficient stock for ${p.name}. Only ${p.stock} ${p.unit} left.`, { productId: p.id, available: p.stock });
+      throw conflict(`Insufficient stock for ${p.name}. Only ${p.stock} ${p.unit} left.`, { code: 'INSUFFICIENT_STOCK', productId: p.id, name: p.name, available: p.stock, requested: Number(it.quantity) });
     }
     return {
       productId: p.id, name: p.name, quantity: it.quantity, unitPaise: toPaise(p.selling_price), taxRate: p.tax_rate,
@@ -101,6 +101,32 @@ async function resolveDiscountAuthority(client, user, bill, approval) {
 }
 
 /**
+ * Owner/Manager authority for an offline decision (accept a changed price, dismiss a sale). Enforced HERE, on the server:
+ *   - an owner/manager session is its own authority;
+ *   - a cashier session needs a verified owner/manager's email + password (same checks, lockout and timing guard as a discount approval);
+ *   - anything else is refused with `code`.
+ * Returns the approving user's id. Credentials are only verified, never stored.
+ */
+async function resolveManagerAuthority(client, user, approval, code) {
+  if (user.role === 'business_owner' || user.role === 'manager') return { approvedBy: user.id, self: true };
+  const refuse = (msg) => { const err = forbidden(msg); err.details = { code }; return err; };
+  if (!approval || !approval.email || !approval.password) throw refuse('This needs an owner or manager. Ask one to approve it.');
+  approvalGuard.assertRequesterAllowed(user.id);
+  const res = await client.query(`SELECT id, password_hash, role, is_active FROM users WHERE lower(email) = lower($1)`, [approval.email]);
+  const approver = res.rows[0];
+  const locked = approver ? await approvalGuard.accountLocked(approver.id) : false;
+  const matches = await bcrypt.compare(approval.password, approver ? approver.password_hash : DUMMY_HASH);
+  const ok = !!approver && approver.is_active && !locked && matches;
+  if (!ok) {
+    await approvalGuard.recordFailure(user.id, approver && !locked ? approver.id : null, approver ? 'bad_credentials' : 'unknown_account', null);
+    throw forbidden('Approval failed: invalid approver credentials.');
+  }
+  approvalGuard.recordSuccess(user.id);
+  if (approver.role !== 'business_owner' && approver.role !== 'manager') throw refuse('Only an owner or manager can approve this.');
+  return { approvedBy: approver.id, self: false };
+}
+
+/**
  * Turns the payment part of a request into tender lines that add up to the bill EXACTLY (integer paise — no rounding slack).
  *   paymentMethod only      → one line for the whole bill (the original behaviour)
  *   payments: [{method, amount}] → split payment; each method at most once; lines must sum to the total (no over- or under-payment).
@@ -148,7 +174,7 @@ function requestHash(user, input, merged) {
  * Returns { sale, replayed }. replayed=true means this key was already used with the same payload: the ORIGINAL sale is returned and nothing
  * is processed again (no second sale, no second stock deduction).
  */
-async function createSale(user, input, idempotencyKey) {
+async function createSale(user, input, idempotencyKey, { expectedTotal = null, acceptPriceTotal = null } = {}) {
   const merged = mergeItems(input.items);
   const hash = requestHash(user, input, merged);
   const result = await withTransaction(async (client) => {
@@ -176,6 +202,20 @@ async function createSale(user, input, idempotencyKey) {
     const products = await loadProductsForCart(client, merged, { lock: true });
     const lines = buildLines(merged, products);
     const bill = computeBill(lines, input.discount || null);
+    // Offline POS: the customer was shown (and paid) expectedTotal. The server stays authoritative on price, but it never silently charges a
+    // different amount: refuse before anything is written (the claim above rolls back with the transaction), so a decision can be made.
+    // expectedTotal is deliberately NOT part of requestHash, so an explicit "accept the new price" retry can reuse the same key.
+    let priceChange = null;
+    if (expectedTotal != null && expectedTotal !== toPaise(bill.total)) {
+      const details = { code: 'OFFLINE_PRICE_CHANGED', expectedTotal: expectedTotal / 100, currentTotal: bill.total, difference: Math.round((bill.total - expectedTotal / 100) * 100) / 100 };
+      // The decision covers exactly the total the person was shown (acceptPriceTotal, paise): if the price moved again, decide again.
+      if (acceptPriceTotal == null || acceptPriceTotal !== toPaise(bill.total)) {
+        throw conflict(`The price changed since this sale was made offline: ₹${expectedTotal / 100} was charged but the current bill is ₹${bill.total}.`, details);
+      }
+      // Accepting a different price than the customer was shown is an owner/manager decision, checked on the server.
+      const auth = await resolveManagerAuthority(client, user, input.approval, 'OFFLINE_PRICE_APPROVAL_REQUIRED');
+      priceChange = { ...details, approvedBy: auth.approvedBy, self: auth.self };
+    }
     const { approvedBy } = await resolveDiscountAuthority(client, user, bill, input.approval);
 
     const pay = resolvePayments(input, toPaise(bill.total));
@@ -219,7 +259,7 @@ async function createSale(user, input, idempotencyKey) {
         line.quantity,
         line.productId,
       ]);
-      if (!upd.rowCount) throw conflict(`Insufficient stock for ${line.name}.`);
+      if (!upd.rowCount) throw conflict(`Insufficient stock for ${line.name}.`, { code: 'INSUFFICIENT_STOCK', productId: line.productId, name: line.name, requested: line.quantity });
       // Batch-tracked products (Phase 9) sell earliest-expiry first and the movement records which batch; others are untouched.
       const parts = upd.rows[0].track_batches ? await batches.deductFefo(client, line.productId, line.quantity, { stockAfter: Number(upd.rows[0].stock) }) : [];
       const moves = parts.length ? parts.map((x) => ({ qty: x.quantity, batchId: x.batchId })) : [{ qty: line.quantity, batchId: null }];
@@ -232,7 +272,7 @@ async function createSale(user, input, idempotencyKey) {
     }
     await client.query('UPDATE sale_requests SET sale_id = $1 WHERE idempotency_key = $2', [saleId, idempotencyKey]);
     if (held) await client.query(`UPDATE held_bills SET status = 'completed', completed_sale_id = $2, completed_at = now(), version = version + 1 WHERE id = $1`, [held.id, saleId]);
-    return { saleId, replayed: false };
+    return { saleId, replayed: false, priceChange };
   });
 
   if (result.replayed) return { sale: await getSale(result.saleId, user), replayed: true };
@@ -246,7 +286,7 @@ async function createSale(user, input, idempotencyKey) {
     console.error('[risk] scoring failed for sale', result.saleId, err.message);
   }
   const sale = await getSale(result.saleId, user);
-  return { replayed: false, sale: { ...sale, risk: risk && risk.score >= config.rules.riskAlertThreshold ? { score: risk.score, severity: risk.severity } : null } };
+  return { replayed: false, priceChange: result.priceChange, sale: { ...sale, risk: risk && risk.score >= config.rules.riskAlertThreshold ? { score: risk.score, severity: risk.severity } : null } };
 }
 
 async function getSale(id, user) {
@@ -376,4 +416,4 @@ async function refundSale(id, user) {
   return getSale(id, user);
 }
 
-module.exports = { resolvePayments, previewBill, createSale, getSale, listSales, refundSale, discountLimits, loadProductsForCart, mergeItems };
+module.exports = { resolveManagerAuthority, resolvePayments, previewBill, createSale, getSale, listSales, refundSale, discountLimits, loadProductsForCart, mergeItems };

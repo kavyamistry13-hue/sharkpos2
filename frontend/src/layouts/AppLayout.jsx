@@ -3,7 +3,9 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Sun, Store, Truck, LayoutDashboard, ShoppingCart, Package, Boxes, Receipt, Users, LineChart, Sparkles, ShieldAlert, UserCog, Settings, HelpCircle, Menu, X, LogOut, Presentation, History, CreditCard, Zap, TrendingUp, Wallet, ClipboardCheck, Clock } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
 import { LogoMark, Wordmark } from '../components/Logo';
-import { Button, Badge } from '../components/ui';
+import { Button, Badge, Modal } from '../components/ui';
+import { OfflineStatusPill } from '../components/OfflineStatus';
+import { useOffline } from '../hooks/useOffline';
 import SubscriptionBanner from '../components/SubscriptionBanner';
 import { DemoModeButton } from '../components/DemoMode';
 import { initials, cap } from '../utils/format';
@@ -49,7 +51,8 @@ function SideNav({ onNavigate }) {
 }
 
 function Sidebar({ onNavigate }) {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
+  const askSignOut = () => window.dispatchEvent(new Event('sharkpos:sign-out'));
   return (
     <div className="flex h-full flex-col bg-ink-900">
       <div className="flex items-center gap-2.5 px-5 py-5"><LogoMark /><Wordmark dark /></div>
@@ -61,10 +64,35 @@ function Sidebar({ onNavigate }) {
             <p className="truncate text-sm font-semibold text-white">{user.name}</p>
             <p className="text-xs text-[#9db4c4]">{cap(user.role)}</p>
           </div>
-          <button onClick={logout} className="rounded-md p-2 text-[#9db4c4] hover:bg-ink-800 hover:text-white" aria-label="Sign out"><LogOut className="size-[18px]" /></button>
+          <button onClick={askSignOut} className="rounded-md p-2 text-[#9db4c4] hover:bg-ink-800 hover:text-white" aria-label="Sign out"><LogOut className="size-[18px]" /></button>
         </div>
       </div>
     </div>
+  );
+}
+
+/** Signing out with sales that have not reached the server: say so, offer to sync first, and only then sign out (the sales stay on this device). */
+function SignOutGuard() {
+  const { logout } = useAuth();
+  const { offline, unsynced } = useOffline();
+  const [warn, setWarn] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const h = async () => { const r = await logout(); if (r.blocked) setWarn(r); };
+    window.addEventListener('sharkpos:sign-out', h);
+    return () => window.removeEventListener('sharkpos:sign-out', h);
+  }, [logout]);
+  const syncFirst = async () => { setBusy(true); try { await offline.checkConnectivity(); await offline.syncNow({ force: true }); const r = await offline.prepareLogout(); if (r.unsynced === 0) { setWarn(null); await logout(); } else setWarn({ ...r, blocked: true }); } catch { /* the panel shows the reason */ } finally { setBusy(false); } };
+  const close = () => setWarn(null);
+  const n = warn ? Math.max(unsynced, warn.unsynced || 0) : 0;
+  return (
+    <Modal open={!!warn} onClose={close} title="Sales have not synced yet" size="sm"
+      footer={<><Button variant="secondary" onClick={close}>Stay signed in</Button><Button variant="secondary" loading={busy} onClick={syncFirst}>Sync now</Button><Button variant="danger" onClick={async () => { setWarn(null); await logout({ force: true }); }}>Sign out anyway</Button></>}>
+      <div data-testid="signout-warning" className="space-y-2 text-sm">
+        <p><b>{n} offline {n === 1 ? 'sale has' : 'sales have'}</b> not reached the server{warn && warn.needsReview ? `, and ${warn.needsReview} need${warn.needsReview === 1 ? 's' : ''} a decision` : ''}.</p>
+        <p className="text-muted">If you sign out anyway, they stay saved on this device and are sent the next time <b>you</b> sign in here with a connection. Nobody else can see or send them. Do not clear this browser's data meanwhile.</p>
+      </div>
+    </Modal>
   );
 }
 
@@ -92,6 +120,7 @@ export default function AppLayout() {
           </button>
           <p className="text-sm font-semibold text-muted">{current ? current.label : ''}</p>
           <div className="ml-auto flex items-center gap-2">
+            <OfflineStatusPill />
             {isRole('business_owner', 'manager') && (
               <Button variant="secondary" size="sm" onClick={() => nav('/present')}><Presentation className="size-4" aria-hidden="true" /><span className="hidden sm:inline">Presentation mode</span></Button>
             )}
@@ -99,6 +128,7 @@ export default function AppLayout() {
             <Badge tone="info" className="hidden sm:inline-flex">{cap(user.role)}</Badge>
           </div>
         </header>
+        <SignOutGuard />
         <SubscriptionBanner />
         <main className="flex-1 p-4 sm:p-6"><Outlet /></main>
       </div>

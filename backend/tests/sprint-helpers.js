@@ -12,7 +12,7 @@ async function makeShop(api) {
     const c = await o.post('/employees', { name: `${role} person`, email, password: 'Passw0rdOK', role });
     assert.equal(c.status, 201, JSON.stringify(c.body));
     const login = await api().post('/auth/login', { email, password: 'Passw0rdOK' });
-    shop[role] = { token: login.body.accessToken, id: c.body.id };
+    shop[role] = { token: login.body.accessToken, id: c.body.id, email };
   }
   const lk = await o.get('/products/lookups');
   shop.category = lk.body.categories[0];

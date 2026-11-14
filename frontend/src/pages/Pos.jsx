@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Minus, Plus, Search, ShoppingBag, Trash2, UserPlus, X, Banknote, Smartphone, CreditCard, BadgeCheck, ShoppingCart, Wallet } from 'lucide-react';
+import { Minus, Plus, Search, ShoppingBag, Trash2, UserPlus, X, Banknote, Smartphone, CreditCard, BadgeCheck, ShoppingCart, Wallet, WifiOff } from 'lucide-react';
 import { api } from '../services/api';
 import { useAsync, useDebounced } from '../hooks/useAsync';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../hooks/useAuth';
+import { useOffline } from '../hooks/useOffline';
+import { OfflineReceiptModal } from '../components/OfflineStatus';
 import { Badge, Button, Card, EmptyState, Field, Input, Modal, PageHeader, Select, Spinner, cx } from '../components/ui';
 import { InvoiceModal } from '../components/Invoice';
 import { inr } from '../utils/format';
@@ -77,6 +79,7 @@ export function CustomerPicker({ customer, onChange }) {
 export default function Pos() {
   const toast = useToast();
   const { user } = useAuth();
+  const { offline, state: offState, isOffline: offlineMode } = useOffline();   // Phase 17D: offline mode is decided by the health probe, never by guessing
   const searchRef = useRef(null);
   const [q, setQ] = useState('');
   const dq = useDebounced(q, 150);
@@ -88,7 +91,7 @@ export default function Pos() {
   const [discValue, setDiscValue] = useState('');
   const [pay, setPay] = useState('upi');
   const [tendered, setTendered] = useState('');
-  const [bill, setBill] = useState(null);
+  const [serverBill, setBill] = useState(null);
   const [billError, setBillError] = useState('');
   const [busy, setBusy] = useState(false);
   const [approval, setApproval] = useState(null); // { message }
@@ -96,6 +99,7 @@ export default function Pos() {
   const [approvalError, setApprovalError] = useState('');
   const [invoice, setInvoice] = useState(null);
   const [cartOpen, setCartOpen] = useState(false);
+  const [offlineReceipt, setOfflineReceipt] = useState(null);
 
   useEffect(() => { searchRef.current && searchRef.current.focus(); }, []);
 
@@ -109,13 +113,29 @@ export default function Pos() {
   // The backend prices the cart; the screen only displays what it returns.
   useEffect(() => {
     if (!cart.length) { setBill(null); setBillError(''); return undefined; }
+    if (offlineMode) return undefined;           // offline: the bill comes from the saved product list instead (below)
     let live = true;
     const t = setTimeout(() => {
       api.post('/sales/preview', { items, discount }).then((b) => { if (live) { setBill(b); setBillError(''); } }).catch((e) => { if (live) { setBill(null); setBillError(e.message); } });
     }, 180);
     return () => { live = false; clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [itemsKey]);
+  }, [itemsKey, offlineMode]);
+
+  // ---- Offline mode (Phase 17D). Same screen, same cart. Prices come from the saved product list through the SHARED bill calculator
+  // (the same file the server uses); stock is the saved count minus offline sales already promised. Nothing here touches the server.
+  const offlineRows = useMemo(() => (offlineMode ? offline.searchCatalog(dq) : []), [offlineMode, dq, offState.queued, offState.catalog.generatedAt]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const offlineBill = useMemo(() => {
+    if (!offlineMode || !cart.length || !offState.catalog.present) return null;
+    try { return offline.priceOffline(cart, discount); } catch { return null; }
+  }, [offlineMode, itemsKey, offState.catalog.generatedAt]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const bill = offlineMode ? offlineBill : serverBill;
+  const offlineLimit = offState.discountLimitPct;
+  const offlineDiscountBlocked = !!(offlineMode && bill && bill.discount > 0 && (offlineLimit === null || bill.discountPct > offlineLimit));
+  const view = offlineMode
+    ? { loading: false, error: offState.catalog.present ? null : { message: 'No product list is saved on this device yet. It downloads while you are online, so connect once before selling offline.' }, data: offState.catalog.present ? { rows: offlineRows } : null, reload: () => {} }
+    : products;
+  useEffect(() => { if (offlineMode && pay === 'credit') setPay('cash'); }, [offlineMode, pay]);
 
   const addToCart = useCallback((p) => {
     setCart((c) => {
@@ -148,6 +168,15 @@ export default function Pos() {
   const scanCode = async (raw) => {
     try {
       const code = cleanCode(raw);
+      if (offlineMode) {                          // offline: look the code up in the saved product list (same equivalence rule as the server)
+        const hit = code ? offline.lookupCatalog(code) : null;
+        if (!hit) { toast.error(`Barcode ${raw} is not in the offline product list.`); return; }
+        const p = hit.product;
+        if (p.expiryDate && p.expiryDate < new Date().toISOString().slice(0, 10)) toast.error(`${p.name} is expired and cannot be sold.`);
+        else if (p.stock <= 0) toast.error(`${p.name} is out of stock on this device.`);
+        else addToCart(p);
+        return;
+      }
       const r = code ? await lookupBarcode(code) : { found: false };
       if (!r.found) { toast.error(r.canRegister ? `Barcode ${raw} is not registered. Open the Counter to register it.` : `Barcode ${raw} is not registered. Ask a manager to register it.`); return; }
       const p = r.product;
@@ -158,8 +187,8 @@ export default function Pos() {
   };
   const onSearchKey = (e) => {
     if (e.key === 'Enter' && looksLikeBarcode(q)) { scanCode(q.trim()); setQ(''); return; }
-    if (e.key === 'Enter' && products.data && products.data.rows.length) {
-      const exact = products.data.rows.find((p) => p.sku.toLowerCase() === q.trim().toLowerCase()) || products.data.rows[0];
+    if (e.key === 'Enter' && view.data && view.data.rows.length) {
+      const exact = view.data.rows.find((p) => p.sku.toLowerCase() === q.trim().toLowerCase()) || view.data.rows[0];
       addToCart(exact);
       setQ('');
     }
@@ -179,10 +208,22 @@ export default function Pos() {
 
   const creditInfo = useAsync(() => (pay === 'credit' && customer ? api.get(`/credit/customers/${customer.id}/balance`) : Promise.resolve(null)), [pay, customer && customer.id]);
 
+  // Saves the bill on this device (same per-bill key as an online sale). Refusals (credit, customer, discount over limit, stock) come back as clear messages.
+  const saveOffline = async (shownTotal) => {
+    const r = await offline.recordSale({ key: keyForBill(), cart: cart.map((c) => ({ id: c.id, qty: c.qty })), discount, paymentMethod: pay, customer, shownTotal, cashierName: user.name });
+    attemptRef.current = null; setOfflineReceipt(r); reset();
+    return r;
+  };
+
   const submit = async (withApproval) => {
     if (submitting.current) return;            // a second tap while the first is in flight does nothing
     submitting.current = true;
     setBusy(true); setApprovalError('');
+    if (offlineMode) {
+      try { const r = await saveOffline(); toast.success(`${r.record.localRef} saved on this device. It will sync automatically.`); }
+      catch (e) { toast.error(e.message); } finally { submitting.current = false; setBusy(false); }
+      return;
+    }
     try {
       const sale = await api.post('/sales', { items, discount, paymentMethod: pay, customerId: customer ? customer.id : null, approval: withApproval || null }, {
         idempotencyKey: keyForBill(),
@@ -192,18 +233,23 @@ export default function Pos() {
       setInvoice(sale);
       setApproval(null);
       reset();
-      products.reload();
+      view.reload();
       toast.success(`Sale ${sale.invoiceNo} completed. Stock updated.`);
     } catch (e) {
       if (e.status === 403 && e.details && e.details.code === 'APPROVAL_REQUIRED') { setApproval({ message: e.message }); }
       else if (withApproval) setApprovalError(e.message);
-      else toast.error(e.message);
+      else if (e.status === 0 && !customer && pay !== 'credit' && offState.available && offState.catalog.present) {
+        // The connection dropped mid-sale (after the safe automatic retries). Keep the sale: save it on this device under the SAME key, at the
+        // total the customer was shown. If the server did get the first request, syncing the same key just returns that sale; it never doubles.
+        try { const r = await saveOffline(bill ? bill.total : undefined); offline.checkConnectivity().catch(() => {}); setApproval(null); toast.info(`Connection lost. The sale was saved on this device as ${r.record.localRef} and will sync automatically.`); }
+        catch (e2) { toast.error(e2.message); }
+      } else toast.error(e.message);
     } finally { submitting.current = false; setBusy(false); }
   };
 
   const change = pay === 'cash' && bill && parseFloat(tendered) > 0 ? Math.round((parseFloat(tendered) - bill.total) * 100) / 100 : null;
   const itemCount = cart.reduce((a, c) => a + c.qty, 0);
-  const limit = limits.data ? limits.data[user.role] : null;
+  const limit = offlineMode ? offlineLimit : (limits.data ? limits.data[user.role] : null);
 
   const cartPanel = (
     <Card className="flex h-full flex-col">
@@ -236,7 +282,7 @@ export default function Pos() {
         )}
       </div>
       <div className="space-y-4 border-t border-line p-5">
-        <CustomerPicker customer={customer} onChange={setCustomer} />
+        {offlineMode && !customer ? <p className="rounded-lg bg-canvas px-3 py-2 text-xs text-muted">Customers and udhaar need a connection.</p> : <CustomerPicker customer={customer} onChange={setCustomer} />}
         <div>
           <p className="mb-1 text-[13px] font-semibold">Discount</p>
           <div className="flex gap-2">
@@ -245,7 +291,10 @@ export default function Pos() {
           </div>
           {limit !== null && <p className="mt-1 text-xs text-muted">You can give up to {limit}% without approval. Above that, a manager signs off.</p>}
         </div>
-        {billError && <p role="alert" className="rounded-lg bg-bad-soft px-3 py-2 text-sm font-medium text-bad">{billError}</p>}
+        {offlineDiscountBlocked && <p role="alert" className="rounded-lg bg-warn-soft px-3 py-2 text-sm font-medium text-warn">{offlineLimit === null ? 'Discounts are not available offline until this device has been online once.' : `A ${bill.discountPct}% discount needs a manager's approval, which needs a connection. Offline you can give up to ${offlineLimit}%.`}</p>}
+        {offlineMode && customer && <p role="alert" className="rounded-lg bg-warn-soft px-3 py-2 text-sm font-medium text-warn">Customers are not available offline. Remove {customer.name} to sell offline.</p>}
+        {offlineMode && cart.length > 0 && !bill && <p role="alert" className="rounded-lg bg-bad-soft px-3 py-2 text-sm font-medium text-bad">{offState.catalog.present ? 'A product on this bill is not in the offline product list. Remove it to continue.' : 'No product list is saved on this device, so this bill cannot be priced offline.'}</p>}
+        {billError && !offlineMode && <p role="alert" className="rounded-lg bg-bad-soft px-3 py-2 text-sm font-medium text-bad">{billError}</p>}
         <dl className="space-y-1.5 text-sm num">
           <div className="flex justify-between"><dt className="text-muted">Subtotal</dt><dd>{bill ? inr(bill.subtotal, 2) : '—'}</dd></div>
           <div className="flex justify-between"><dt className="text-muted">Discount{bill && bill.discount > 0 ? ` (${bill.discountPct}%)` : ''}</dt><dd>{bill && bill.discount > 0 ? `−${inr(bill.discount, 2)}` : '—'}</dd></div>
@@ -254,9 +303,9 @@ export default function Pos() {
         </dl>
         <div role="radiogroup" aria-label="Payment method" className="grid grid-cols-4 gap-2">
           {PAY.map((p) => (
-            <button key={p.value} role="radio" aria-checked={pay === p.value} onClick={() => setPay(p.value)}
-              className={cx('flex flex-col items-center gap-1 rounded-lg border px-2 py-2.5 text-sm font-semibold transition-colors', pay === p.value ? 'border-brand bg-brand-soft text-brand' : 'border-line text-muted hover:bg-canvas')}>
-              <p.icon className="size-5" aria-hidden="true" />{p.label}
+            <button key={p.value} role="radio" aria-checked={pay === p.value} disabled={offlineMode && p.value === 'credit'} title={offlineMode && p.value === 'credit' ? 'Udhaar needs a connection' : undefined} onClick={() => setPay(p.value)}
+              className={cx('flex flex-col items-center gap-1 rounded-lg border px-2 py-2.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40', pay === p.value ? 'border-brand bg-brand-soft text-brand' : 'border-line text-muted hover:bg-canvas')}>
+              <p.icon className="size-5" aria-hidden="true" />{p.label}{offlineMode && (p.value === 'upi' || p.value === 'card') && <span className="text-[10px] font-bold uppercase text-warn">unverified</span>}
             </button>
           ))}
         </div>
@@ -274,14 +323,21 @@ export default function Pos() {
               : <p>{customer.name} owes <b className="num">{inr(creditInfo.data.balance, 2)}</b> of a <b className="num">{inr(creditInfo.data.creditLimit, 0)}</b> limit. Available: <b className={cx('num', bill && bill.total > creditInfo.data.available ? 'text-bad' : 'text-ok')}>{inr(creditInfo.data.available, 2)}</b>{bill && bill.total > creditInfo.data.available ? ' — this bill is more than the limit.' : ''}</p>}
           </div>
         )}
-        <Button size="lg" className="w-full" disabled={!bill || cart.length === 0 || (pay === 'credit' && (!customer || !creditInfo.data || !creditInfo.data.enabled))} loading={busy} onClick={() => submit(null)}><BadgeCheck className="size-5" aria-hidden="true" />Complete sale{bill ? ` · ${inr(bill.total, 2)}` : ''}</Button>
+        <Button size="lg" className="w-full" disabled={!bill || cart.length === 0 || (pay === 'credit' && (!customer || !creditInfo.data || !creditInfo.data.enabled)) || (offlineMode && (offlineDiscountBlocked || !!customer))} loading={busy} onClick={() => submit(null)}><BadgeCheck className="size-5" aria-hidden="true" />{offlineMode ? 'Save sale offline' : 'Complete sale'}{bill ? ` · ${inr(bill.total, 2)}` : ''}</Button>
       </div>
     </Card>
   );
 
   return (
     <div className="mx-auto max-w-[1400px]">
-      <PageHeader title="POS / Billing" subtitle="Search a product, add it to the bill, take payment. Prices, tax and stock are handled by the server." />
+      <PageHeader title="POS / Billing" subtitle={offlineMode ? 'Offline: sales are saved on this device and sent to the server when the connection returns.' : 'Search a product, add it to the bill, take payment. Prices, tax and stock are handled by the server.'} />
+      {offlineMode && (
+        <div role="status" data-testid="pos-offline-banner" className="mb-4 flex items-start gap-3 rounded-xl border border-warn/40 bg-warn-soft px-4 py-3 text-sm text-warn">
+          <WifiOff className="mt-0.5 size-5 shrink-0" aria-hidden="true" />
+          <div><p className="font-bold">You are offline. You can keep selling.</p>
+            <p>Each sale is saved on this device and gets a temporary OFF number. Prices and stock come from the list saved {offState.catalog.present ? (offState.catalog.level === 'stale' ? 'more than a day ago, so they may be out of date' : 'earlier today') : '(none yet)'}. Udhaar, customers and discounts above your limit need a connection. UPI and card are not verified.</p></div>
+        </div>
+      )}
       <div className="grid gap-5 lg:grid-cols-[1fr_440px]">
         <div>
           <div className="relative mb-4">
@@ -289,11 +345,11 @@ export default function Pos() {
             <input ref={searchRef} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={onSearchKey} aria-label="Search products by name or SKU" placeholder="Search by name, SKU or category — Enter adds the first match"
               className="h-12 w-full rounded-xl border border-line bg-white pl-11 pr-4 text-base placeholder:text-[#8b9aa5] focus:border-brand" />
           </div>
-          {products.loading && !products.data ? <div className="grid place-items-center py-16"><Spinner className="size-7" /></div> :
-            products.error && !products.data ? <Card><EmptyState title="Unable to load products." hint={products.error.message} action={<Button variant="secondary" onClick={products.reload}>Try again</Button>} /></Card> :
-            products.data.rows.length === 0 ? <Card><EmptyState icon={Search} title="No product found" hint="Check the spelling or try a SKU. Out-of-stock and expired items are hidden." /></Card> : (
+          {view.loading && !view.data ? <div className="grid place-items-center py-16"><Spinner className="size-7" /></div> :
+            view.error && !view.data ? <Card><EmptyState title="Unable to load products." hint={view.error.message} action={offlineMode ? undefined : <Button variant="secondary" onClick={products.reload}>Try again</Button>} /></Card> :
+            view.data.rows.length === 0 ? <Card><EmptyState icon={Search} title="No product found" hint="Check the spelling or try a SKU. Out-of-stock and expired items are hidden." /></Card> : (
               <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
-                {products.data.rows.map((p) => {
+                {view.data.rows.map((p) => {
                   const inCart = cart.find((c) => c.id === p.id);
                   return (
                     <li key={p.id}>
@@ -328,6 +384,7 @@ export default function Pos() {
         </div>
       </Modal>
       <InvoiceModal sale={invoice} onClose={() => setInvoice(null)} />
+      <OfflineReceiptModal result={offlineReceipt} onClose={() => setOfflineReceipt(null)} />
     </div>
   );
 }

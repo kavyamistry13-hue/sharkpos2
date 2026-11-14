@@ -36,6 +36,8 @@ router.get('/lookups', asyncH(async (_req, res) => res.json(await svc.getLookups
 
 // POS search is open to every signed-in role; management list needs manager+
 router.get('/pos-search', validate({ query: z.object({ q: z.string().max(80).optional() }) }), asyncH(async (req, res) => res.json({ rows: await svc.searchForPos(req.query.q) })));
+// Offline POS (Phase 17): the minimum a till needs to keep selling without the server. Prices, tax, stock, unit and barcodes only: never cost, supplier or margin.
+router.get('/offline-catalog', validate({ query: z.object({ after: z.coerce.number().int().min(0).default(0), limit: z.coerce.number().int().min(1).max(1000).default(500) }) }), asyncH(async (req, res) => res.json(await svc.offlineCatalog(req.query))));
 
 router.get(
   '/',

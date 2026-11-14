@@ -3,6 +3,8 @@ import { CheckCircle2, Printer } from 'lucide-react';
 import { api } from '../services/api';
 import { useAsync } from '../hooks/useAsync';
 import { useToast } from '../hooks/useToast';
+import { useOffline } from '../hooks/useOffline';
+import { UnsyncedNotice } from '../components/OfflineStatus';
 import { Async, Badge, Button, Card, CardHeader, DataTable, Field, Input, PageHeader, Stat, Textarea } from '../components/ui';
 import { dateTime, inr, num } from '../utils/format';
 
@@ -15,6 +17,7 @@ function Reconcile({ r, onSaved }) {
   const [opening, setOpening] = useState(String(c.openingCash));
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
+  const { unsynced } = useOffline();      // a count taken while offline sales are unsynced would not match the server's expected cash
   const expected = Math.round((Number(opening || 0) + c.netCashMovement) * 100) / 100;
   const variance = actual === '' ? null : Math.round((Number(actual) - expected) * 100) / 100;
   const save = async (e) => {
@@ -31,7 +34,7 @@ function Reconcile({ r, onSaved }) {
         <Field label="Counted cash (₹)"><Input inputMode="decimal" value={actual} onChange={(e) => setActual(e.target.value.replace(/[^0-9.]/g, ''))} /></Field>
         {variance !== null && <p className={`sm:col-span-3 text-sm font-semibold num ${variance === 0 ? 'text-ok' : 'text-bad'}`}>{variance === 0 ? 'Cash matches exactly.' : variance > 0 ? `Over by ${inr(variance, 2)}` : `Short by ${inr(-variance, 2)}`}</p>}
         <Field label={variance ? 'Why is it different? (required)' : 'Note (optional)'} className="sm:col-span-3"><Textarea rows={2} value={notes} maxLength={500} onChange={(e) => setNotes(e.target.value)} /></Field>
-        <div className="sm:col-span-3"><Button type="submit" loading={busy} disabled={actual === '' || (variance !== 0 && variance !== null && notes.trim().length < 3)}><CheckCircle2 className="size-4" aria-hidden="true" />Save cash count</Button></div>
+        <div className="sm:col-span-3"><Button type="submit" loading={busy} disabled={unsynced > 0 || actual === '' || (variance !== 0 && variance !== null && notes.trim().length < 3)}><CheckCircle2 className="size-4" aria-hidden="true" />Save cash count</Button></div>
       </form>
       {c.reconciliation && <p className="border-t border-line px-4 py-3 text-sm text-muted">Latest count: {inr(c.reconciliation.actualCash, 2)} against {inr(c.reconciliation.expectedCash, 2)} expected (variance {inr(c.reconciliation.variance, 2)}) by {c.reconciliation.reconciledBy || '—'} · {dateTime(c.reconciliation.createdAt)}. A new count does not erase the old one; both stay in the history.</p>}
     </Card>
@@ -45,6 +48,7 @@ export default function Closing() {
   const saved = () => { rep.reload(); hist.reload(); };
   return (
     <div className="mx-auto max-w-[1100px] space-y-5">
+      <UnsyncedNotice />
       <PageHeader title="Closing report & cash" subtitle="End-of-day numbers and a cash count that records any difference."
         actions={<><Input type="date" aria-label="Report date" value={date} max={today()} onChange={(e) => e.target.value && setDate(e.target.value)} className="!w-44" /><Button variant="secondary" onClick={() => window.print()}><Printer className="size-4" aria-hidden="true" />Print</Button></>} />
       <Async state={rep} rows={5}>

@@ -12,6 +12,7 @@ COPY --from=deps /app/backend/node_modules backend/node_modules
 COPY backend/package.json backend/
 COPY backend/src backend/src
 COPY database database
+COPY shared shared
 RUN chown -R node:node /app
 USER node
 WORKDIR /app/backend

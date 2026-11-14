@@ -214,6 +214,32 @@ async function searchForPos(q, limit = 24) {
   return rows.map((p) => ({ id: p.id, name: p.name, sku: p.sku, category: p.category, price: p.sellingPrice, stock: p.stock, taxRate: p.taxRate, unit: p.unit, allowDecimal: isDecimalUnit(p.unit), priceIncludesTax: p.priceIncludesTax }));
 }
 
+/**
+ * Offline POS catalog page (keyset on product id). Active, unexpired products that have stock — the same set pos-search offers to sell.
+ * Deliberately excludes purchase_price, avg_cost, suppliers and margins. Tenant isolation comes from RLS on every table touched.
+ */
+async function offlineCatalog({ after = 0, limit = 500 } = {}) {
+  const today = new Date().toISOString().slice(0, 10);   // same day rule the sale path uses to refuse expired goods
+  const rows = (await query(
+    `SELECT p.id, p.name, p.sku, p.selling_price, p.stock, p.unit, p.price_includes_tax, p.expiry_date, c.name AS category, c.tax_rate,
+            COALESCE(array_agg(b.barcode ORDER BY b.is_primary DESC, b.id) FILTER (WHERE b.barcode IS NOT NULL), '{}') AS barcodes
+       FROM products p JOIN categories c ON c.id = p.category_id
+       LEFT JOIN product_barcodes b ON b.product_id = p.id AND b.business_id = p.business_id
+      WHERE p.is_active AND p.stock > 0 AND (p.expiry_date IS NULL OR p.expiry_date >= $1::date) AND p.id > $2
+      GROUP BY p.id, c.id ORDER BY p.id LIMIT $3`,
+    [today, after, limit + 1],
+  )).rows;
+  const page = rows.slice(0, limit);
+  return {
+    generatedAt: new Date().toISOString(),
+    nextAfter: rows.length > limit ? page[page.length - 1].id : null,
+    rows: page.map((p) => ({
+      id: p.id, name: p.name, sku: p.sku, category: p.category, price: p.selling_price, stock: p.stock, taxRate: p.tax_rate, unit: p.unit,
+      allowDecimal: isDecimalUnit(p.unit), priceIncludesTax: p.price_includes_tax, expiryDate: p.expiry_date ? String(p.expiry_date).slice(0, 10) : null, barcodes: p.barcodes,
+    })),
+  };
+}
+
 async function getCostHistory(productId, limit = 100) {
   if (!(await query('SELECT 1 FROM products WHERE id = $1', [productId])).rowCount) throw notFound('Product not found.');
   const res = await query(
@@ -238,4 +264,4 @@ async function getProductSuppliers(productId) {
 }
 
 module.exports = { createProductTx, assertStockLevels,
-  quickCreate, addStock, getCostHistory, getProductSuppliers, listProducts, getLookups, getProduct, createProduct, updateProduct, deleteProduct, searchForPos, statusLabel };
+  quickCreate, addStock, getCostHistory, getProductSuppliers, listProducts, getLookups, getProduct, createProduct, updateProduct, deleteProduct, searchForPos, offlineCatalog, statusLabel };

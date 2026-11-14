@@ -59,8 +59,9 @@ async function attempt(method, path, { body, params, headers }) {
   return res;
 }
 
-async function request(method, path, { body, params, idempotencyKey, onRetry } = {}) {
-  const headers = idempotencyKey ? { 'idempotency-key': idempotencyKey } : undefined;
+// `headers`: extra request headers (the offline sync sends X-Offline-Sale). `noRetry`: skip the automatic retry loop below (the offline sync owns its own back-off).
+async function request(method, path, { body, params, idempotencyKey, onRetry, headers: extraHeaders, noRetry } = {}) {
+  const headers = (idempotencyKey || extraHeaders) ? { ...(idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}), ...(extraHeaders || {}) } : undefined;
   let res = null; let data = null; let networkFailed = false;
   for (let n = 0; ; n++) {
     networkFailed = false; res = null; data = null;
@@ -69,7 +70,7 @@ async function request(method, path, { body, params, idempotencyKey, onRetry } =
       try { data = await res.json(); } catch { /* empty body */ }
     } catch { networkFailed = true; }
     const transient = networkFailed || isTransient(res.status, data);
-    if (!transient || !idempotencyKey || n >= RETRY_DELAYS.length) break;
+    if (!transient || !idempotencyKey || noRetry || n >= RETRY_DELAYS.length) break;
     if (onRetry) onRetry(n + 1, RETRY_DELAYS.length);
     await wait(RETRY_DELAYS[n]);
   }
